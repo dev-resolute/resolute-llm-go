@@ -18,10 +18,11 @@ import (
 
 // Config holds the OpenAI-compatible provider configuration.
 type Config struct {
-	APIKey    string
-	BaseURL   string
-	Retry     llm.RetryPolicy
-	Headers   map[string]string
+	APIKey     string
+	GetAPIKey  func(ctx context.Context) (string, error)
+	BaseURL    string
+	Retry      llm.RetryPolicy
+	Headers    map[string]string
 }
 
 // Provider implements llm.LLMProvider for OpenAI-compatible endpoints.
@@ -47,10 +48,10 @@ func (p *Provider) Name() string { return p.name }
 // Capabilities implements llm.LLMProvider.
 func (p *Provider) Capabilities(model string) llm.ProviderCapabilities {
 	caps := llm.ProviderCapabilities{
-		Streaming:        true,
-		ToolCalling:      true,
-		PromptCaching:    false,
-		Vision:           strings.Contains(model, "vision"),
+		Streaming:     true,
+		ToolCalling:   true,
+		PromptCaching: false,
+		Vision:        strings.Contains(model, "vision"),
 	}
 	if strings.HasPrefix(model, "o") || (strings.HasPrefix(model, "accounts/") && strings.Contains(model, "o")) {
 		caps.Thinking = true
@@ -61,67 +62,73 @@ func (p *Provider) Capabilities(model string) llm.ProviderCapabilities {
 
 // Stream implements llm.LLMProvider.
 func (p *Provider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStream {
-	evCh := make(chan llm.LLMEvent, 16)
-	doneCh := make(chan llm.StreamResult, 1)
+	return llm.Run(ctx, req, p.produce)
+}
 
-	go func() {
-		defer close(evCh)
-		defer close(doneCh)
-
-		body, err := p.toRequestBody(req)
+func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(llm.LLMEvent) error, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) ([]llm.Message, error) {
+	apiKey := p.config.APIKey
+	if p.config.GetAPIKey != nil {
+		key, err := p.config.GetAPIKey(ctx)
 		if err != nil {
-			doneCh <- llm.StreamResult{Err: fmt.Errorf("openai-compat: building request: %w", err)}
-			return
+			return nil, fmt.Errorf("openai-compat: refreshing api key: %w", err)
 		}
+		if key != "" {
+			apiKey = key
+		}
+	}
 
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(body))
-		if err != nil {
-			doneCh <- llm.StreamResult{Err: fmt.Errorf("openai-compat: creating request: %w", err)}
-			return
-		}
+	body, err := p.toRequestBody(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai-compat: building request: %w", err)
+	}
 
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "text/event-stream")
-		if p.config.APIKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+p.config.APIKey)
-		}
-		for k, v := range p.config.Headers {
-			httpReq.Header.Set(k, v)
-		}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("openai-compat: creating request: %w", err)
+	}
 
-		resp, err := p.client.Do(httpReq)
-		if err != nil {
-			transient := isNetworkError(err)
-			select {
-			case evCh <- llm.LLMErrorEvent{Error: err, Transient: transient}:
-			case <-ctx.Done():
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	for k, v := range p.config.Headers {
+		httpReq.Header.Set(k, v)
+	}
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		transient := isNetworkError(err)
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, fmt.Errorf("openai-compat: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if setResponseMeta != nil {
+		respHeaders := make(map[string]string)
+		for k, v := range resp.Header {
+			if len(v) > 0 {
+				respHeaders[k] = v[0]
 			}
-			doneCh <- llm.StreamResult{Err: fmt.Errorf("openai-compat: request failed: %w", err)}
-			return
 		}
-		defer resp.Body.Close()
+		setResponseMeta(resp.StatusCode, respHeaders)
+	}
 
-		if resp.StatusCode != http.StatusOK {
-			err := fmt.Errorf("openai-compat: HTTP %d", resp.StatusCode)
-			transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-			select {
-			case evCh <- llm.LLMErrorEvent{Error: err, Transient: transient}:
-			case <-ctx.Done():
-			}
-			doneCh <- llm.StreamResult{Err: err}
-			return
+	if resp.StatusCode != http.StatusOK {
+		err := fmt.Errorf("openai-compat: HTTP %d", resp.StatusCode)
+		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
+			return nil, emitErr
 		}
+		return nil, err
+	}
 
-		resultMessages, err := p.readSSE(ctx, resp, evCh)
-		if err != nil {
-			doneCh <- llm.StreamResult{Err: err}
-			return
-		}
-
-		doneCh <- llm.StreamResult{Messages: append(req.Messages, resultMessages...)}
-	}()
-
-	return llm.NewEventStream(evCh, doneCh)
+	return p.readSSE(ctx, resp, emit)
 }
 
 func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
@@ -174,9 +181,9 @@ func toOpenAIMessages(messages []llm.Message) []map[string]any {
 			})
 		case llm.ToolResultContent:
 			out = append(out, map[string]any{
-				"role":       "tool",
+				"role":         "tool",
 				"tool_call_id": c.CallID,
-				"content":    c.Content,
+				"content":      c.Content,
 			})
 		case llm.ThinkingContent:
 			out = append(out, map[string]any{
@@ -208,7 +215,7 @@ func toOpenAITools(tools []llm.ToolDef) []map[string]any {
 	return out
 }
 
-func (p *Provider) readSSE(ctx context.Context, resp *http.Response, evCh chan<- llm.LLMEvent) ([]llm.Message, error) {
+func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(llm.LLMEvent) error) ([]llm.Message, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	var resultMessages []llm.Message
 	var assistantText strings.Builder
@@ -232,17 +239,13 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, evCh chan<-
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				assistantText.WriteString(choice.Delta.Content)
-				select {
-				case evCh <- llm.TextDeltaEvent{Delta: choice.Delta.Content}:
-				case <-ctx.Done():
-					return nil, context.Cause(ctx)
+				if err := emit(llm.TextDeltaEvent{Delta: choice.Delta.Content}); err != nil {
+					return nil, err
 				}
 			}
 			if choice.Delta.ReasoningContent != "" {
-				select {
-				case evCh <- llm.ThinkingDeltaEvent{Delta: choice.Delta.ReasoningContent}:
-				case <-ctx.Done():
-					return nil, context.Cause(ctx)
+				if err := emit(llm.ThinkingDeltaEvent{Delta: choice.Delta.ReasoningContent}); err != nil {
+					return nil, err
 				}
 			}
 			for _, tc := range choice.Delta.ToolCalls {
@@ -254,14 +257,12 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, evCh chan<-
 					buf = &toolCallBuffer{id: tc.ID, name: tc.Function.Name}
 					toolCallBufs[tc.ID] = buf
 					if tc.Function.Name != "" {
-						select {
-						case evCh <- llm.ToolCallStartEvent{
+						if err := emit(llm.ToolCallStartEvent{
 							CallID:   tc.ID,
 							ToolName: tc.Function.Name,
 							Args:     nil,
-						}:
-						case <-ctx.Done():
-							return nil, context.Cause(ctx)
+						}); err != nil {
+							return nil, err
 						}
 					}
 				}
@@ -275,10 +276,8 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, evCh chan<-
 					if buf.args.Len() > 0 {
 						args = json.RawMessage(buf.args.String())
 					}
-					select {
-					case evCh <- llm.ToolCallEndEvent{CallID: id}:
-					case <-ctx.Done():
-						return nil, context.Cause(ctx)
+					if err := emit(llm.ToolCallEndEvent{CallID: id}); err != nil {
+						return nil, err
 					}
 					resultMessages = append(resultMessages, llm.Message{
 						Role: "assistant",
@@ -305,10 +304,8 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, evCh chan<-
 		})
 	}
 
-	select {
-	case evCh <- llm.MessageEndEvent{}:
-	case <-ctx.Done():
-		return nil, context.Cause(ctx)
+	if err := emit(llm.MessageEndEvent{}); err != nil {
+		return nil, err
 	}
 
 	return resultMessages, nil

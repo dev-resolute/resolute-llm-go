@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"google.golang.org/genai"
 	"github.com/resolute-sh/pi-llm-go"
@@ -14,15 +15,18 @@ import (
 
 // Config holds the Gemini provider configuration.
 type Config struct {
-	APIKey string
-	Retry  llm.RetryPolicy
+	APIKey    string
+	GetAPIKey func(ctx context.Context) (string, error)
+	Retry     llm.RetryPolicy
 }
 
 // Provider implements llm.LLMProvider for Google Gemini models.
 type Provider struct {
-	name   string
-	config Config
-	client *genai.Client
+	name      string
+	config    Config
+	client    *genai.Client
+	lastKey   string
+	clientMu  sync.Mutex
 }
 
 // New creates a Provider from the given Config.
@@ -53,120 +57,130 @@ func (p *Provider) Capabilities(model string) llm.ProviderCapabilities {
 
 // Stream implements llm.LLMProvider.
 func (p *Provider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStream {
-	evCh := make(chan llm.LLMEvent, 16)
-	doneCh := make(chan llm.StreamResult, 1)
+	return llm.Run(ctx, req, p.produce)
+}
 
-	go func() {
-		defer close(evCh)
-		defer close(doneCh)
+func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(llm.LLMEvent) error, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) ([]llm.Message, error) {
+	apiKey := p.config.APIKey
+	if p.config.GetAPIKey != nil {
+		key, err := p.config.GetAPIKey(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("gemini: refreshing api key: %w", err)
+		}
+		if key != "" {
+			apiKey = key
+		}
+	}
 
-		contents, sysInstr := toGeminiContents(req.Messages)
-		config := toGeminiConfig(req, sysInstr)
-
-		var resultMessages []llm.Message
-		var prevTextLen int
-		var emittedToolCalls map[string]bool
-
-		for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
+	// Rebuild client if the resolved key changed from what the pooled client
+	// was constructed with. This is the fallback path documented in the PRD.
+	if apiKey != "" && apiKey != p.lastKey {
+		p.clientMu.Lock()
+		if apiKey != p.lastKey {
+			client, err := genai.NewClient(ctx, &genai.ClientConfig{
+				APIKey: apiKey,
+			})
 			if err != nil {
-				transient := isTransientError(err)
-				select {
-				case evCh <- llm.LLMErrorEvent{Error: err, Transient: transient}:
-				case <-ctx.Done():
-				}
-				doneCh <- llm.StreamResult{Err: fmt.Errorf("gemini: stream error: %w", err)}
-				return
+				p.clientMu.Unlock()
+				return nil, fmt.Errorf("gemini: rebuilding client for new key: %w", err)
 			}
+			p.client = client
+			p.lastKey = apiKey
+		}
+		p.clientMu.Unlock()
+	}
 
-			for _, cand := range chunk.Candidates {
-				if cand.Content == nil {
-					continue
-				}
-				for _, part := range cand.Content.Parts {
-					if part.Text != "" {
-						text := part.Text
-						if len(text) > prevTextLen {
-							delta := text[prevTextLen:]
-							select {
-							case evCh <- llm.TextDeltaEvent{Delta: delta}:
-							case <-ctx.Done():
-								doneCh <- llm.StreamResult{Err: context.Cause(ctx)}
-								return
-							}
-							prevTextLen = len(text)
+	// TODO(v0.x): per-call header injection via genai request options if the SDK
+	// exposes them; otherwise headers are a no-op for Gemini.
+	_ = headers
+
+	contents, sysInstr := toGeminiContents(req.Messages)
+	config := toGeminiConfig(req, sysInstr)
+
+	var resultMessages []llm.Message
+	var prevTextLen int
+	var emittedToolCalls map[string]bool
+
+	for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
+		if err != nil {
+			transient := isTransientError(err)
+			if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
+				return nil, emitErr
+			}
+			return nil, fmt.Errorf("gemini: stream error: %w", err)
+		}
+
+		for _, cand := range chunk.Candidates {
+			if cand.Content == nil {
+				continue
+			}
+			for _, part := range cand.Content.Parts {
+				if part.Text != "" {
+					text := part.Text
+					if len(text) > prevTextLen {
+						delta := text[prevTextLen:]
+						if err := emit(llm.TextDeltaEvent{Delta: delta}); err != nil {
+							return nil, err
 						}
-						if part.Thought {
-							select {
-							case evCh <- llm.ThinkingDeltaEvent{Delta: text}:
-							case <-ctx.Done():
-								doneCh <- llm.StreamResult{Err: context.Cause(ctx)}
-								return
-							}
-						}
+						prevTextLen = len(text)
 					}
-					if part.FunctionCall != nil {
-						fc := part.FunctionCall
-						if !emittedToolCalls[fc.ID] {
-							emittedToolCalls[fc.ID] = true
-							args, _ := json.Marshal(fc.Args)
-							select {
-							case evCh <- llm.ToolCallStartEvent{
-								CallID:   fc.ID,
-								ToolName: fc.Name,
-								Args:     args,
-							}:
-							case <-ctx.Done():
-								doneCh <- llm.StreamResult{Err: context.Cause(ctx)}
-								return
-							}
+					if part.Thought {
+						if err := emit(llm.ThinkingDeltaEvent{Delta: text}); err != nil {
+							return nil, err
 						}
 					}
 				}
-				if cand.FinishReason != "" {
-					// Emit tool call ends for any pending tool calls
-					if cand.Content != nil {
-						for _, part := range cand.Content.Parts {
-							if part.FunctionCall != nil {
-								select {
-								case evCh <- llm.ToolCallEndEvent{CallID: part.FunctionCall.ID}:
-								case <-ctx.Done():
-									doneCh <- llm.StreamResult{Err: context.Cause(ctx)}
-									return
-								}
-								args, _ := json.Marshal(part.FunctionCall.Args)
-								resultMessages = append(resultMessages, llm.Message{
-									Role: "assistant",
-									Content: llm.ToolCallContent{
-										CallID:   part.FunctionCall.ID,
-										ToolName: part.FunctionCall.Name,
-										Args:     args,
-									},
-								})
-							}
+				if part.FunctionCall != nil {
+					fc := part.FunctionCall
+					if !emittedToolCalls[fc.ID] {
+						emittedToolCalls[fc.ID] = true
+						args, _ := json.Marshal(fc.Args)
+						if err := emit(llm.ToolCallStartEvent{
+							CallID:   fc.ID,
+							ToolName: fc.Name,
+							Args:     args,
+						}); err != nil {
+							return nil, err
 						}
 					}
 				}
 			}
+			if cand.FinishReason != "" {
+				// Emit tool call ends for any pending tool calls
+				if cand.Content != nil {
+					for _, part := range cand.Content.Parts {
+						if part.FunctionCall != nil {
+							if err := emit(llm.ToolCallEndEvent{CallID: part.FunctionCall.ID}); err != nil {
+								return nil, err
+							}
+							args, _ := json.Marshal(part.FunctionCall.Args)
+							resultMessages = append(resultMessages, llm.Message{
+								Role: "assistant",
+								Content: llm.ToolCallContent{
+									CallID:   part.FunctionCall.ID,
+									ToolName: part.FunctionCall.Name,
+									Args:     args,
+								},
+							})
+						}
+					}
+				}
+			}
 		}
+	}
 
-		if len(resultMessages) == 0 && prevTextLen > 0 {
-			// Pure text response
-			// We don't have the full text stored; reconstruct from last chunk if needed.
-			// For simplicity, emit an empty text message since the deltas were already streamed.
-			// The consumer already got the text via TextDeltaEvents.
-		}
+	if len(resultMessages) == 0 && prevTextLen > 0 {
+		// Pure text response
+		// We don't have the full text stored; reconstruct from last chunk if needed.
+		// For simplicity, emit an empty text message since the deltas were already streamed.
+		// The consumer already got the text via TextDeltaEvents.
+	}
 
-		select {
-		case evCh <- llm.MessageEndEvent{}:
-		case <-ctx.Done():
-			doneCh <- llm.StreamResult{Err: context.Cause(ctx)}
-			return
-		}
+	if err := emit(llm.MessageEndEvent{}); err != nil {
+		return nil, err
+	}
 
-		doneCh <- llm.StreamResult{Messages: append(req.Messages, resultMessages...)}
-	}()
-
-	return llm.NewEventStream(evCh, doneCh)
+	return resultMessages, nil
 }
 
 func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content) {

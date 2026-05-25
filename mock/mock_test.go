@@ -191,3 +191,79 @@ func TestMockProviderLastUserMatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
 }
+
+func TestMockProviderRecordHeaders(t *testing.T) {
+	m := New("mock").RecordHeaders()
+	m.OnPrompt(Exact("hello")).RespondText("world").Add()
+
+	req := llm.LLMRequest{
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "hello"}},
+		},
+		Headers: map[string]string{"X-Test": "1"},
+	}
+
+	stream := m.Stream(context.Background(), req)
+	<-stream.Events
+	<-stream.Done
+
+	got := m.RecordedHeaders()
+	if got["X-Test"] != "1" {
+		t.Fatalf("expected recorded header X-Test=1, got %q", got["X-Test"])
+	}
+}
+
+func TestMockProviderStatusAndRespHeaders(t *testing.T) {
+	var gotStatus int
+	var gotHeaders map[string]string
+	m := New("mock")
+	m.OnPrompt(Exact("hello")).RespondText("world").
+		Status(201).
+		RespHeaders(map[string]string{"X-Request-ID": "abc"}).
+		Add()
+
+	req := llm.LLMRequest{
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "hello"}},
+		},
+		OnAfterResponse: func(statusCode int, headers map[string]string) {
+			gotStatus = statusCode
+			gotHeaders = headers
+		},
+	}
+
+	stream := m.Stream(context.Background(), req)
+	<-stream.Events
+	<-stream.Done
+
+	if gotStatus != 201 {
+		t.Fatalf("expected status 201, got %d", gotStatus)
+	}
+	if gotHeaders["X-Request-ID"] != "abc" {
+		t.Fatalf("expected X-Request-ID=abc, got %q", gotHeaders["X-Request-ID"])
+	}
+}
+
+func TestMockProviderInvokesOnBeforeRequest(t *testing.T) {
+	var called bool
+	m := New("mock")
+	m.OnPrompt(Exact("hello")).RespondText("world").Add()
+
+	req := llm.LLMRequest{
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "hello"}},
+		},
+		OnBeforeRequest: func(headers map[string]string) error {
+			called = true
+			return nil
+		},
+	}
+
+	stream := m.Stream(context.Background(), req)
+	<-stream.Events
+	<-stream.Done
+
+	if !called {
+		t.Fatal("expected OnBeforeRequest to be called")
+	}
+}

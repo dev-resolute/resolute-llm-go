@@ -106,14 +106,18 @@ type response struct {
 	delay       time.Duration
 	streamError error // emitted as LLMErrorEvent{Transient: false}
 	resultMsgs  []llm.Message
+	status      int
+	respHeaders map[string]string
 }
 
 // MockProvider is a scripted LLMProvider for tests.
 type MockProvider struct {
-	name    string
-	scripts []scriptStep
-	called  int
-	mu      sync.Mutex
+	name           string
+	scripts        []scriptStep
+	called         int
+	mu             sync.Mutex
+	recordHeaders  bool
+	recordedHeaders map[string]string
 }
 
 // New creates a fresh MockProvider with the given name.
@@ -122,6 +126,23 @@ func New(name string) *MockProvider {
 		name = "mock"
 	}
 	return &MockProvider{name: name}
+}
+
+// RecordHeaders enables header recording for the next Stream call.
+func (m *MockProvider) RecordHeaders() *MockProvider {
+	m.recordHeaders = true
+	return m
+}
+
+// RecordedHeaders returns the headers received during the last Stream call.
+func (m *MockProvider) RecordedHeaders() map[string]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]string, len(m.recordedHeaders))
+	for k, v := range m.recordedHeaders {
+		out[k] = v
+	}
+	return out
 }
 
 // OnPrompt starts a fluent builder for a script step triggered by the given matcher.
@@ -176,71 +197,68 @@ func (m *MockProvider) Capabilities(model string) llm.ProviderCapabilities {
 
 // Stream implements llm.LLMProvider.
 func (m *MockProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStream {
-	evCh := make(chan llm.LLMEvent, 16)
-	doneCh := make(chan llm.StreamResult, 1)
+	return llm.Run(ctx, req, m.produce)
+}
 
-	go func() {
-		defer close(evCh)
-		defer close(doneCh)
-
-		m.mu.Lock()
-		if m.called >= len(m.scripts) {
-			m.mu.Unlock()
-			doneCh <- llm.StreamResult{
-				Messages: req.Messages,
-				Err:      fmt.Errorf("mock: unexpected call #%d (no script steps remaining): %w", m.called+1, llm.ErrProviderFatal),
-			}
-			return
-		}
-
-		step := m.scripts[m.called]
-		m.called++
+func (m *MockProvider) produce(ctx context.Context, req llm.LLMRequest, emit func(llm.LLMEvent) error, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) ([]llm.Message, error) {
+	m.mu.Lock()
+	if m.called >= len(m.scripts) {
 		m.mu.Unlock()
+		return nil, fmt.Errorf("mock: unexpected call #%d (no script steps remaining): %w", m.called+1, llm.ErrProviderFatal)
+	}
 
-		if !step.matcher.Match(req.Messages) {
-			doneCh <- llm.StreamResult{
-				Messages: req.Messages,
-				Err:      fmt.Errorf("mock: call #%d did not match script step %d: %w", m.called, step.callIndex, llm.ErrProviderFatal),
-			}
-			return
+	step := m.scripts[m.called]
+	m.called++
+	m.mu.Unlock()
+
+	if !step.matcher.Match(req.Messages) {
+		return nil, fmt.Errorf("mock: call #%d did not match script step %d: %w", m.called, step.callIndex, llm.ErrProviderFatal)
+	}
+
+	if m.recordHeaders {
+		m.mu.Lock()
+		m.recordedHeaders = headers
+		m.mu.Unlock()
+	}
+
+	if step.response.delay > 0 {
+		select {
+		case <-time.After(step.response.delay):
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
 		}
+	}
 
-		if step.response.delay > 0 {
-			select {
-			case <-time.After(step.response.delay):
-			case <-ctx.Done():
-				doneCh <- llm.StreamResult{Messages: req.Messages, Err: context.Cause(ctx)}
-				return
-			}
+	for _, ev := range step.response.events {
+		if err := emit(ev); err != nil {
+			return nil, err
 		}
+	}
 
-		for _, ev := range step.response.events {
-			select {
-			case evCh <- ev:
-			case <-ctx.Done():
-				doneCh <- llm.StreamResult{Messages: req.Messages, Err: context.Cause(ctx)}
-				return
-			}
+	if step.response.streamError != nil {
+		if err := emit(llm.LLMErrorEvent{Error: step.response.streamError, Transient: false}); err != nil {
+			return nil, err
 		}
+	}
 
-		if step.response.streamError != nil {
-			select {
-			case evCh <- llm.LLMErrorEvent{Error: step.response.streamError, Transient: false}:
-			case <-ctx.Done():
-				doneCh <- llm.StreamResult{Messages: req.Messages, Err: context.Cause(ctx)}
-				return
-			}
+	if setResponseMeta != nil {
+		status := step.response.status
+		if status == 0 {
+			status = 200
 		}
-
-		var result llm.StreamResult
-		if step.response.err != nil {
-			result.Err = step.response.err
+		respHeaders := step.response.respHeaders
+		if respHeaders == nil {
+			respHeaders = map[string]string{}
 		}
-		result.Messages = append(req.Messages, step.response.resultMessages()...)
-		doneCh <- result
-	}()
+		setResponseMeta(status, respHeaders)
+	}
 
-	return llm.NewEventStream(evCh, doneCh)
+	var result llm.StreamResult
+	if step.response.err != nil {
+		result.Err = step.response.err
+	}
+	result.Messages = append(req.Messages, step.response.resultMessages()...)
+	return result.Messages[len(req.Messages):], result.Err
 }
 
 // Reset zeroes the call counter so the provider can be reused.
@@ -293,6 +311,16 @@ func (rb *ResponseBuilder) RespondToolCall(name string, args json.RawMessage) *R
 	return rb
 }
 
+// Terminate marks the tool call response as terminating the run.
+// This is only meaningful when used with RespondToolCall and consumed by pi-core-agent-go.
+func (rb *ResponseBuilder) Terminate() *ResponseBuilder {
+	// The mock stores termination intent on the last result message.
+	// pi-core-agent-go reads Terminate from ToolResult, not from the LLM layer,
+	// so this is a no-op at the mock-provider level. The test constructs the
+	// ToolResult with Terminate:true directly in the tool executor.
+	return rb
+}
+
 // RespondThinking appends a thinking response to the script.
 func (rb *ResponseBuilder) RespondThinking(text string) *ResponseBuilder {
 	rb.r.events = append(rb.r.events, llm.ThinkingDeltaEvent{Delta: text}, llm.MessageEndEvent{})
@@ -312,6 +340,18 @@ func (rb *ResponseBuilder) Error(err error) *ResponseBuilder {
 // StreamError emits an LLMErrorEvent during the stream.
 func (rb *ResponseBuilder) StreamError(err error) *ResponseBuilder {
 	rb.r.streamError = err
+	return rb
+}
+
+// Status sets the HTTP status code reported via setResponseMeta.
+func (rb *ResponseBuilder) Status(code int) *ResponseBuilder {
+	rb.r.status = code
+	return rb
+}
+
+// RespHeaders sets the response headers reported via setResponseMeta.
+func (rb *ResponseBuilder) RespHeaders(h map[string]string) *ResponseBuilder {
+	rb.r.respHeaders = h
 	return rb
 }
 
