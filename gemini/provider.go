@@ -22,11 +22,18 @@ type Config struct {
 type Provider struct {
 	name   string
 	config Config
+	client *genai.Client
 }
 
 // New creates a Provider from the given Config.
 func New(cfg Config) (llm.LLMProvider, error) {
-	return &Provider{name: "gemini", config: cfg}, nil
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey: cfg.APIKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gemini: creating client: %w", err)
+	}
+	return &Provider{name: "gemini", config: cfg, client: client}, nil
 }
 
 // Name implements llm.LLMProvider.
@@ -53,14 +60,6 @@ func (p *Provider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStre
 		defer close(evCh)
 		defer close(doneCh)
 
-		client, err := genai.NewClient(ctx, &genai.ClientConfig{
-			APIKey: p.config.APIKey,
-		})
-		if err != nil {
-			doneCh <- llm.StreamResult{Err: fmt.Errorf("gemini: creating client: %w", err)}
-			return
-		}
-
 		contents, sysInstr := toGeminiContents(req.Messages)
 		config := toGeminiConfig(req, sysInstr)
 
@@ -68,7 +67,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStre
 		var prevTextLen int
 		var emittedToolCalls map[string]bool
 
-		for chunk, err := range client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
+		for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
 			if err != nil {
 				transient := isTransientError(err)
 				select {

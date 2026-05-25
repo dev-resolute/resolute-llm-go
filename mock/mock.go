@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/resolute-sh/pi-llm-go"
@@ -72,6 +74,24 @@ type predicateMatcher struct {
 
 func (m predicateMatcher) Match(messages []llm.Message) bool { return m.fn(messages) }
 
+// LastUser returns a Matcher that matches only the text of the last user message.
+func LastUser(s string) Matcher { return lastUserMatcher{s: s} }
+
+type lastUserMatcher struct {
+	s string
+}
+
+func (m lastUserMatcher) Match(messages []llm.Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			if tc, ok := messages[i].Content.(llm.TextContent); ok {
+				return strings.TrimSpace(tc.Text) == m.s
+			}
+		}
+	}
+	return false
+}
+
 // scriptStep is a single step in the mock's playback script.
 type scriptStep struct {
 	matcher   Matcher
@@ -93,6 +113,7 @@ type MockProvider struct {
 	name    string
 	scripts []scriptStep
 	called  int
+	mu      sync.Mutex
 }
 
 // New creates a fresh MockProvider with the given name.
@@ -162,7 +183,9 @@ func (m *MockProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.Event
 		defer close(evCh)
 		defer close(doneCh)
 
+		m.mu.Lock()
 		if m.called >= len(m.scripts) {
+			m.mu.Unlock()
 			doneCh <- llm.StreamResult{
 				Messages: req.Messages,
 				Err:      fmt.Errorf("mock: unexpected call #%d (no script steps remaining): %w", m.called+1, llm.ErrProviderFatal),
@@ -172,6 +195,7 @@ func (m *MockProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.Event
 
 		step := m.scripts[m.called]
 		m.called++
+		m.mu.Unlock()
 
 		if !step.matcher.Match(req.Messages) {
 			doneCh <- llm.StreamResult{
@@ -220,10 +244,18 @@ func (m *MockProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.Event
 }
 
 // Reset zeroes the call counter so the provider can be reused.
-func (m *MockProvider) Reset() { m.called = 0 }
+func (m *MockProvider) Reset() {
+	m.mu.Lock()
+	m.called = 0
+	m.mu.Unlock()
+}
 
 // Called returns how many script steps have been consumed.
-func (m *MockProvider) Called() int { return m.called }
+func (m *MockProvider) Called() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.called
+}
 
 // ResponseBuilder builds a scripted response via chained method calls.
 type ResponseBuilder struct {

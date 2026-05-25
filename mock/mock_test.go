@@ -170,3 +170,24 @@ func TestMockProviderStreamError(t *testing.T) {
 		t.Fatal("expected LLMErrorEvent with 'boom'")
 	}
 }
+
+func TestMockProviderLastUserMatch(t *testing.T) {
+	m := New("mock")
+	m.OnPrompt(LastUser("second")).RespondText("matched second").Add()
+
+	req := llm.LLMRequest{
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "first"}},
+			{Role: "assistant", Content: llm.TextContent{Text: "ok"}},
+			{Role: "user", Content: llm.TextContent{Text: "second"}},
+		},
+	}
+
+	stream := m.Stream(context.Background(), req)
+	<-stream.Events
+	result := <-stream.Done
+
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+}
