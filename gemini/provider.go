@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"google.golang.org/genai"
 	"github.com/resolute-sh/pi-llm-go"
+	"google.golang.org/genai"
 )
 
 // Config holds the Gemini provider configuration.
@@ -22,11 +22,11 @@ type Config struct {
 
 // Provider implements llm.LLMProvider for Google Gemini models.
 type Provider struct {
-	name      string
-	config    Config
-	client    *genai.Client
-	lastKey   string
-	clientMu  sync.Mutex
+	name     string
+	config   Config
+	client   *genai.Client
+	lastKey  string
+	clientMu sync.Mutex
 }
 
 // New creates a Provider from the given Config.
@@ -61,6 +61,10 @@ func (p *Provider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStre
 }
 
 func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(llm.LLMEvent) error, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) ([]llm.Message, error) {
+	if req.Transport == llm.TransportWebSocket {
+		return nil, fmt.Errorf("gemini: %w: %s", llm.ErrTransportUnsupported, req.Transport)
+	}
+
 	apiKey := p.config.APIKey
 	if p.config.GetAPIKey != nil {
 		key, err := p.config.GetAPIKey(ctx)
@@ -236,10 +240,14 @@ func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) *genai.Generate
 	}
 	if req.Thinking != llm.ThinkingOff {
 		budget := map[llm.ThinkingLevel]int{
-			llm.ThinkingLow:    1000,
-			llm.ThinkingMedium: 4000,
-			llm.ThinkingHigh:   16000,
+			llm.ThinkingMinimal: 512,
+			llm.ThinkingLow:     1000,
+			llm.ThinkingMedium:  4000,
+			llm.ThinkingHigh:    16000,
 		}[req.Thinking]
+		if b, ok := req.ThinkingBudgets[req.Thinking]; ok {
+			budget = b
+		}
 		if req.ProviderHints.Gemini != nil && req.ProviderHints.Gemini.ThinkingBudget > 0 {
 			budget = req.ProviderHints.Gemini.ThinkingBudget
 		}

@@ -5,6 +5,7 @@ type ThinkingLevel int
 
 const (
 	ThinkingOff ThinkingLevel = iota
+	ThinkingMinimal
 	ThinkingLow
 	ThinkingMedium
 	ThinkingHigh

@@ -18,11 +18,11 @@ import (
 
 // Config holds the OpenAI-compatible provider configuration.
 type Config struct {
-	APIKey     string
-	GetAPIKey  func(ctx context.Context) (string, error)
-	BaseURL    string
-	Retry      llm.RetryPolicy
-	Headers    map[string]string
+	APIKey    string
+	GetAPIKey func(ctx context.Context) (string, error)
+	BaseURL   string
+	Retry     llm.RetryPolicy
+	Headers   map[string]string
 }
 
 // Provider implements llm.LLMProvider for OpenAI-compatible endpoints.
@@ -66,6 +66,10 @@ func (p *Provider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStre
 }
 
 func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(llm.LLMEvent) error, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) ([]llm.Message, error) {
+	if req.Transport == llm.TransportWebSocket {
+		return nil, fmt.Errorf("openai-compat: %w: %s", llm.ErrTransportUnsupported, req.Transport)
+	}
+
 	apiKey := p.config.APIKey
 	if p.config.GetAPIKey != nil {
 		key, err := p.config.GetAPIKey(ctx)
@@ -91,6 +95,11 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	httpReq.Header.Set("Accept", "text/event-stream")
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if req.SessionID != "" {
+		httpReq.Header.Set("session_id", req.SessionID)
+		httpReq.Header.Set("x-client-request-id", req.SessionID)
+		httpReq.Header.Set("x-session-affinity", req.SessionID)
 	}
 	for k, v := range p.config.Headers {
 		httpReq.Header.Set(k, v)
@@ -131,6 +140,18 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	return p.readSSE(ctx, resp, emit)
 }
 
+// maxPromptCacheKeyLength is the OpenAI prompt_cache_key limit, matching upstream Pi.
+const maxPromptCacheKeyLength = 64
+
+// clampPromptCacheKey truncates the key to maxPromptCacheKeyLength runes.
+func clampPromptCacheKey(key string) string {
+	runes := []rune(key)
+	if len(runes) <= maxPromptCacheKeyLength {
+		return key
+	}
+	return string(runes[:maxPromptCacheKeyLength])
+}
+
 func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
 	body := map[string]any{
 		"model":    req.Model,
@@ -140,11 +161,15 @@ func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
 	if len(req.Tools) > 0 {
 		body["tools"] = toOpenAITools(req.Tools)
 	}
+	if req.SessionID != "" {
+		body["prompt_cache_key"] = clampPromptCacheKey(req.SessionID)
+	}
 	if req.Thinking != llm.ThinkingOff {
 		effort := map[llm.ThinkingLevel]string{
-			llm.ThinkingLow:    "low",
-			llm.ThinkingMedium: "medium",
-			llm.ThinkingHigh:   "high",
+			llm.ThinkingMinimal: "minimal",
+			llm.ThinkingLow:     "low",
+			llm.ThinkingMedium:  "medium",
+			llm.ThinkingHigh:    "high",
 		}[req.Thinking]
 		if req.ProviderHints.OpenAI != nil && req.ProviderHints.OpenAI.ReasoningEffort != "" {
 			effort = req.ProviderHints.OpenAI.ReasoningEffort
