@@ -103,7 +103,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 
 	var resultMessages []llm.Message
 	var prevTextLen int
-	var emittedToolCalls map[string]bool
+	emittedToolCalls := map[string]bool{}
 
 	for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
 		if err != nil {
