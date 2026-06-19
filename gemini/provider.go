@@ -18,6 +18,32 @@ type Config struct {
 	APIKey    string
 	GetAPIKey func(ctx context.Context) (string, error)
 	Retry     llm.RetryPolicy
+
+	// Vertex routes requests through the Vertex AI backend instead of the Gemini
+	// API. Vertex authenticates with Application Default Credentials (e.g. GKE
+	// Workload Identity), so no API key is used — APIKey and GetAPIKey are ignored
+	// when Vertex is set.
+	Vertex bool
+	// Project is the GCP project ID for the Vertex AI backend. Used only when
+	// Vertex is set; falls back to the GOOGLE_CLOUD_PROJECT environment variable.
+	Project string
+	// Location is the GCP region for the Vertex AI backend (e.g. "us-central1" or
+	// "global"). Used only when Vertex is set; falls back to the
+	// GOOGLE_CLOUD_LOCATION environment variable.
+	Location string
+}
+
+// clientConfig builds the genai client config for the chosen backend. The Vertex
+// backend uses Application Default Credentials, so it carries no API key.
+func (cfg Config) clientConfig(apiKey string) *genai.ClientConfig {
+	if cfg.Vertex {
+		return &genai.ClientConfig{
+			Backend:  genai.BackendVertexAI,
+			Project:  cfg.Project,
+			Location: cfg.Location,
+		}
+	}
+	return &genai.ClientConfig{APIKey: apiKey}
 }
 
 // Provider implements llm.LLMProvider for Google Gemini models.
@@ -29,11 +55,10 @@ type Provider struct {
 	clientMu sync.Mutex
 }
 
-// New creates a Provider from the given Config.
+// New creates a Provider from the given Config. With Config.Vertex it targets
+// the Vertex AI backend (ADC credentials); otherwise the Gemini API with APIKey.
 func New(cfg Config) (llm.LLMProvider, error) {
-	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
-		APIKey: cfg.APIKey,
-	})
+	client, err := genai.NewClient(context.Background(), cfg.clientConfig(cfg.APIKey))
 	if err != nil {
 		return nil, fmt.Errorf("gemini: creating client: %w", err)
 	}

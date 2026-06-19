@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Gemini Vertex AI backend. `gemini.Config` gains `Vertex bool`, `Project`, and
+  `Location`. When `Vertex` is set, the provider targets the Vertex AI backend via
+  `google.golang.org/genai` and authenticates with Application Default Credentials
+  (e.g. GKE Workload Identity) instead of an API key; `Project`/`Location` fall back
+  to `GOOGLE_CLOUD_PROJECT`/`GOOGLE_CLOUD_LOCATION`. The default (API key) path is
+  unchanged.
+
 ## [0.2.0] - 2026-05-29
 
 Additive release supporting pi-core-agent-go v0.2.0. No breaking changes; existing
