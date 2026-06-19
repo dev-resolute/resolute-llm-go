@@ -10,6 +10,10 @@
 
 **Gemini provider**: The `LLMProvider` implementation built on `google.golang.org/genai`.
 
+**GetAPIKey**: Optional `func(ctx) (string, error)` on each provider's `Config`, resolved once per `Stream` call for short-lived credentials; falls back to the static `APIKey` when nil.
+
+**Config.Headers**: Static per-provider headers merged into every request, overridden by per-call `LLMRequest.Headers` on conflict.
+
 ### Streaming
 
 **EventStream**: Struct with `Events <-chan LLMEvent` and `Done <-chan StreamResult`. The shared return shape for any LLM streaming call.
@@ -17,6 +21,18 @@
 **StreamResult**: Terminal value on `EventStream.Done`. Contains final messages + error.
 
 **LLMEvent**: Sealed interface for events on `EventStream.Events`. Concrete variants: `TextDeltaEvent`, `ThinkingDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `MessageEndEvent`, `LLMErrorEvent`, `LLMRetryEvent`, `UsageEvent`.
+
+### Request
+
+**LLMRequest**: Inputs for a single streaming call — `Model`, `Messages`, `Tools`, `Thinking`, plus the per-call fields below.
+
+**LLMRequest.Headers**: Per-call header overrides merged over `Config.Headers` (request wins). The path for hook-injected trace/tenant headers to reach the wire.
+
+**SessionID**: Optional conversation identifier for prompt-cache affinity. The OpenAI-compatible adapter sends it as affinity headers (`session_id`, `x-client-request-id`, `x-session-affinity`) and the `prompt_cache_key` body param; the Gemini adapter ignores it.
+
+**Transport**: `TransportPreference` enum (`TransportAuto` default, `TransportSSE`, `TransportWebSocket`). `TransportWebSocket` returns `ErrTransportUnsupported` from today's HTTP/SSE-only providers; reserved for a future websocket provider.
+
+**OnBeforeRequest / OnAfterResponse**: Per-call hooks on `LLMRequest`. `OnBeforeRequest(headers)` may mutate the merged headers before send; `OnAfterResponse(statusCode, headers)` observes response metadata.
 
 ### Messages
 
@@ -28,9 +44,11 @@
 
 ### Thinking and capabilities
 
-**ThinkingLevel**: Portable enum (`ThinkingOff`, `ThinkingLow`, `ThinkingMedium`, `ThinkingHigh`).
+**ThinkingLevel**: Portable enum (`ThinkingOff`, `ThinkingMinimal`, `ThinkingLow`, `ThinkingMedium`, `ThinkingHigh`). `ThinkingOff` is the zero value; `ThinkingMinimal` sits between `ThinkingOff` and `ThinkingLow`, mapping to `minimal` reasoning effort on the OpenAI-compatible adapter and the smallest valid `thinking_budget` on Gemini.
 
 **ProviderHints**: Typed escape hatch with nilable typed pointers (`*OpenAIHints`, `*GeminiHints`).
+
+**ThinkingBudgets**: Optional `map[ThinkingLevel]int` on `LLMRequest` overriding the per-level token budget. Gemini applies it to `thinking_budget`; the OpenAI-compatible adapter ignores it (`reasoning_effort` is categorical). `ProviderHints` takes precedence when both are set.
 
 **ProviderCapabilities**: Concrete bool fields per model: `Streaming`, `ToolCalling`, `ParallelToolCalls`, `Thinking`, `PromptCaching`, `Vision`.
 
