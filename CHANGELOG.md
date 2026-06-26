@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-06-26
+
+### Added
+
+- **OpenAI-compat `Compat` config + `deepseek` thinking format (LLM-6).** `openaicompat.Config`
+  gains a `Compat` field carrying caller-supplied per-model behaviour (ADR-0008, catalog-free):
+  `ThinkingFormat` (`ThinkingReasoningEffort` default, `ThinkingDeepSeek`), `SupportsReasoningEffort`,
+  `RequiresReasoningContentOnAssistantMessages`, and `MaxTokens`. Under `ThinkingDeepSeek`, thinking
+  is toggled via `thinking:{type:"enabled"|"disabled"}` (plus `reasoning_effort` when supported),
+  assistant messages can be required to carry a `reasoning_content` field, and `max_tokens` is sent
+  when `MaxTokens > 0`. This adds DeepSeek V4 support on the opencode-go gateway
+  (`https://opencode.ai/zen/go/v1`, `deepseek-v4-flash`/`deepseek-v4-pro`). The zero `Compat`
+  preserves today's OpenAI behaviour exactly.
+
 ## [0.3.0] - 2026-06-26
 
 ### Added

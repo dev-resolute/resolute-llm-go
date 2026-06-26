@@ -23,6 +23,7 @@ type Config struct {
 	BaseURL   string
 	Retry     llm.RetryPolicy
 	Headers   map[string]string
+	Compat    Compat
 }
 
 // Provider implements llm.LLMProvider for OpenAI-compatible endpoints.
@@ -54,6 +55,9 @@ func (p *Provider) Capabilities(model string) llm.ProviderCapabilities {
 		Vision:        strings.Contains(model, "vision"),
 	}
 	if strings.HasPrefix(model, "o") || (strings.HasPrefix(model, "accounts/") && strings.Contains(model, "o")) {
+		caps.Thinking = true
+	}
+	if p.config.Compat.ThinkingFormat != ThinkingReasoningEffort {
 		caps.Thinking = true
 	}
 	caps.ParallelToolCalls = true
@@ -156,7 +160,7 @@ func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
 	body := map[string]any{
 		"model":    req.Model,
 		"stream":   true,
-		"messages": toOpenAIMessages(req.Messages),
+		"messages": toOpenAIMessages(req.Messages, p.config.Compat),
 	}
 	if len(req.Tools) > 0 {
 		body["tools"] = toOpenAITools(req.Tools)
@@ -164,34 +168,44 @@ func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
 	if req.SessionID != "" {
 		body["prompt_cache_key"] = clampPromptCacheKey(req.SessionID)
 	}
-	if req.Thinking != llm.ThinkingOff {
-		effort := map[llm.ThinkingLevel]string{
-			llm.ThinkingMinimal: "minimal",
-			llm.ThinkingLow:     "low",
-			llm.ThinkingMedium:  "medium",
-			llm.ThinkingHigh:    "high",
-		}[req.Thinking]
-		if req.ProviderHints.OpenAI != nil && req.ProviderHints.OpenAI.ReasoningEffort != "" {
-			effort = req.ProviderHints.OpenAI.ReasoningEffort
-		}
-		if effort != "" {
-			body["reasoning_effort"] = effort
-		}
+	p.applyThinking(body, req)
+	if p.config.Compat.MaxTokens > 0 {
+		body["max_tokens"] = p.config.Compat.MaxTokens
 	}
 	return json.Marshal(body)
 }
 
-func toOpenAIMessages(messages []llm.Message) []map[string]any {
+func (p *Provider) applyThinking(body map[string]any, req llm.LLMRequest) {
+	compat := p.config.Compat
+	if compat.ThinkingFormat == ThinkingDeepSeek {
+		if req.Thinking != llm.ThinkingOff {
+			body["thinking"] = map[string]any{"type": "enabled"}
+			if compat.SupportsReasoningEffort {
+				if e := reasoningEffort(req); e != "" {
+					body["reasoning_effort"] = e
+				}
+			}
+		} else {
+			body["thinking"] = map[string]any{"type": "disabled"}
+		}
+		return
+	}
+	if req.Thinking != llm.ThinkingOff {
+		if e := reasoningEffort(req); e != "" {
+			body["reasoning_effort"] = e
+		}
+	}
+}
+
+func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 	var out []map[string]any
 	for _, msg := range messages {
+		var m map[string]any
 		switch c := msg.Content.(type) {
 		case llm.TextContent:
-			out = append(out, map[string]any{
-				"role":    msg.Role,
-				"content": c.Text,
-			})
+			m = map[string]any{"role": msg.Role, "content": c.Text}
 		case llm.ToolCallContent:
-			out = append(out, map[string]any{
+			m = map[string]any{
 				"role": "assistant",
 				"tool_calls": []map[string]any{
 					{
@@ -203,26 +217,33 @@ func toOpenAIMessages(messages []llm.Message) []map[string]any {
 						},
 					},
 				},
-			})
+			}
 		case llm.ToolResultContent:
-			out = append(out, map[string]any{
+			m = map[string]any{
 				"role":         "tool",
 				"tool_call_id": c.CallID,
 				"content":      c.Content,
-			})
+			}
 		case llm.ThinkingContent:
-			out = append(out, map[string]any{
-				"role":    msg.Role,
-				"content": c.Text,
-			})
+			m = map[string]any{"role": msg.Role, "content": c.Text}
 		default:
-			out = append(out, map[string]any{
-				"role":    msg.Role,
-				"content": "",
-			})
+			m = map[string]any{"role": msg.Role, "content": ""}
 		}
+		ensureReasoningContent(m, compat)
+		out = append(out, m)
 	}
 	return out
+}
+
+// ensureReasoningContent adds an empty reasoning_content field to assistant
+// messages when the model requires its presence (e.g. DeepSeek).
+func ensureReasoningContent(m map[string]any, compat Compat) {
+	if !compat.RequiresReasoningContentOnAssistantMessages || m["role"] != "assistant" {
+		return
+	}
+	if _, ok := m["reasoning_content"]; !ok {
+		m["reasoning_content"] = ""
+	}
 }
 
 func toOpenAITools(tools []llm.ToolDef) []map[string]any {
