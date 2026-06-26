@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-06-26
 
 ### Added
 
@@ -10,6 +10,22 @@
   (e.g. GKE Workload Identity) instead of an API key; `Project`/`Location` fall back
   to `GOOGLE_CLOUD_PROJECT`/`GOOGLE_CLOUD_LOCATION`. The default (API key) path is
   unchanged.
+
+### Fixed
+
+- **Gemini 3 thinking now works (LLM-5).** Capabilities and the thinking-config mechanism
+  are derived by generation (ADR-0008): Gemini 3.x / Gemma 4 use the `thinkingLevel` enum
+  while Gemini 2.5 keeps `thinkingBudget` tokens. Previously a `Contains("2.5")` heuristic
+  reported `Thinking:false`/`Vision:false` for `gemini-3.1-pro`, `gemini-3.5-flash`, and the
+  `gemini-flash-latest` aliases, and the provider sent `thinkingBudget` (the wrong field) to
+  Gemini 3 models.
+- **Gemini thinking output now surfaces.** `IncludeThoughts` is set when thinking is on, so
+  the model's reasoning is emitted as `ThinkingDeltaEvent`s; Gemini 3's "off" path uses the
+  lowest supported level without `includeThoughts`.
+- **Gemini streamed text no longer corrupts.** The stream loop treated each delta chunk's
+  text as cumulative and dropped any chunk no longer than the running maximum, garbling
+  multi-chunk responses. Deltas are now emitted directly, with thoughts and answer text on
+  separate channels.
 
 ## [0.2.0] - 2026-05-29
 

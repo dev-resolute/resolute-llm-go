@@ -52,6 +52,15 @@
 
 **ProviderCapabilities**: Concrete bool fields per model: `Streaming`, `ToolCalling`, `ParallelToolCalls`, `Thinking`, `PromptCaching`, `Vision`.
 
+**Gemini model class**: How the Gemini provider derives per-model behaviour from the bare model string, with no model catalog (ADR-0001). Classified by generation: Gemini 2.5 drives reasoning via `thinkingBudget` (a token count); Gemini 3.x (`gemini-3*-pro`, `gemini-3*-flash`, `gemini-flash-latest`, `gemini-flash-lite-latest`) and Gemma 4 drive it via `thinkingLevel` (enum `MINIMAL`/`LOW`/`MEDIUM`/`HIGH`). The same classification feeds `ProviderCapabilities` (`Thinking` and `Vision` per generation) and the thinking-off path (Gemini 3 cannot fully disable thinking — it gets the lowest level without `includeThoughts`). Mirrors upstream `google.ts`'s `isGemini3ProModel`/`isGemini3FlashModel`/`isGemma4Model` predicates but stays catalog-free.
+_Avoid_: model catalog, model registry (we classify by generation, not a metadata table).
+
+**Compat**: Per-model behaviour config on the OpenAI-compatible provider, supplied by the caller (we ship no model catalog — ADR-0001). Mirrors the upstream `compat` object. Carries `ThinkingFormat`, `SupportsReasoningEffort`, `RequiresReasoningContentOnAssistantMessages` (echo prior plain `reasoning_content` back to the model on assistant messages), and `MaxTokensField` (`max_tokens` vs `max_completion_tokens`). The caller sets the `Compat` matching their model when it deviates from the OpenAI default.
+_Avoid_: ModelCompat, Quirks
+
+**ThinkingFormat**: The wire mechanism an OpenAI-compatible model uses to toggle reasoning, selected by `Compat.ThinkingFormat`. Values ported from upstream as needed: `reasoning_effort` (OpenAI o-series — the default, already shipped), `deepseek` (`thinking:{type:enabled/disabled}` plus optional `reasoning_effort`; used by DeepSeek V4 on the opencode-go gateway), and `chat-template` (`chat_template_kwargs`, for Qwen/DeepSeek behind vLLM — not yet ported). Adding a new format is a new enum value plus one branch, never a catalog.
+_Avoid_: ReasoningMode, ThinkingMechanism
+
 ### Retry
 
 **RetryPolicy**: Shared config shape. `MaxRetries`, `MaxRetryDelay`. Delegated to underlying SDK.

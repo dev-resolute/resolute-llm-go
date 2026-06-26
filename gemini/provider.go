@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -70,13 +71,116 @@ func (p *Provider) Name() string { return p.name }
 
 // Capabilities implements llm.LLMProvider.
 func (p *Provider) Capabilities(model string) llm.ProviderCapabilities {
+	class := classifyGemini(model)
 	return llm.ProviderCapabilities{
 		Streaming:         true,
 		ToolCalling:       true,
 		ParallelToolCalls: true,
-		Thinking:          strings.Contains(model, "2.5"),
+		Thinking:          class.thinks(),
 		PromptCaching:     false,
-		Vision:            strings.Contains(model, "vision") || strings.Contains(model, "pro"),
+		Vision:            class.vision(),
+	}
+}
+
+// geminiClass is the generation of a Gemini model, derived from its id without a
+// model catalog (ADR-0008). It selects both the reported capabilities and the
+// thinking-config mechanism.
+type geminiClass int
+
+const (
+	classLegacy geminiClass = iota // pre-2.5: no thinking
+	class25                        // Gemini 2.5: thinkingBudget tokens
+	class3Pro                      // Gemini 3.x pro: thinkingLevel enum
+	class3Flash                    // Gemini 3.x flash + flash-latest aliases: thinkingLevel enum
+	classGemma4                    // Gemma 4: thinkingLevel enum
+)
+
+var (
+	reGemini3Pro   = regexp.MustCompile(`gemini-3(?:\.\d+)?-pro`)
+	reGemini3Flash = regexp.MustCompile(`gemini-3(?:\.\d+)?-flash`)
+	reGemma4       = regexp.MustCompile(`gemma-?4`)
+)
+
+// classifyGemini maps a model id to its generation, mirroring upstream google.ts's
+// isGemini3ProModel/isGemini3FlashModel/isGemma4Model predicates.
+func classifyGemini(model string) geminiClass {
+	m := strings.ToLower(model)
+	switch {
+	case reGemma4.MatchString(m):
+		return classGemma4
+	case reGemini3Pro.MatchString(m):
+		return class3Pro
+	case reGemini3Flash.MatchString(m) || m == "gemini-flash-latest" || m == "gemini-flash-lite-latest":
+		return class3Flash
+	case strings.Contains(m, "2.5"):
+		return class25
+	default:
+		return classLegacy
+	}
+}
+
+func (c geminiClass) thinks() bool { return c != classLegacy }
+
+func (c geminiClass) vision() bool {
+	return c == class25 || c == class3Pro || c == class3Flash
+}
+
+func (c geminiClass) usesThinkingLevel() bool {
+	return c == class3Pro || c == class3Flash || c == classGemma4
+}
+
+// disabledThinkingLevel is the lowest level used when thinking is "off" for models
+// that cannot fully disable it (Gemini 3): pro clamps to LOW, flash/Gemma to MINIMAL.
+func (c geminiClass) disabledThinkingLevel() genai.ThinkingLevel {
+	if c == class3Pro {
+		return genai.ThinkingLevelLow
+	}
+	return genai.ThinkingLevelMinimal
+}
+
+func thinkingLevelFor(level llm.ThinkingLevel) genai.ThinkingLevel {
+	switch level {
+	case llm.ThinkingLow:
+		return genai.ThinkingLevelLow
+	case llm.ThinkingMedium:
+		return genai.ThinkingLevelMedium
+	case llm.ThinkingHigh:
+		return genai.ThinkingLevelHigh
+	default:
+		return genai.ThinkingLevelMinimal
+	}
+}
+
+// thinkingConfigFor builds the thinking config for a thinking-on request: a
+// thinkingLevel enum for Gemini 3 / Gemma 4, thinkingBudget tokens for Gemini 2.5,
+// and nil for models that do not reason.
+func thinkingConfigFor(req llm.LLMRequest) *genai.ThinkingConfig {
+	class := classifyGemini(req.Model)
+	if !class.thinks() {
+		return nil
+	}
+	if class.usesThinkingLevel() {
+		return &genai.ThinkingConfig{
+			ThinkingLevel:   thinkingLevelFor(req.Thinking),
+			IncludeThoughts: true,
+		}
+	}
+	budget := map[llm.ThinkingLevel]int{
+		llm.ThinkingMinimal: 512,
+		llm.ThinkingLow:     1000,
+		llm.ThinkingMedium:  4000,
+		llm.ThinkingHigh:    16000,
+	}[req.Thinking]
+	if b, ok := req.ThinkingBudgets[req.Thinking]; ok {
+		budget = b
+	}
+	if req.ProviderHints.Gemini != nil && req.ProviderHints.Gemini.ThinkingBudget > 0 {
+		budget = req.ProviderHints.Gemini.ThinkingBudget
+	}
+	budget32 := int32(budget)
+	return &genai.ThinkingConfig{
+		ThinkingBudget:  &budget32,
+		IncludeThoughts: true,
 	}
 }
 
@@ -127,7 +231,6 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	config := toGeminiConfig(req, sysInstr)
 
 	var resultMessages []llm.Message
-	var prevTextLen int
 	emittedToolCalls := map[string]bool{}
 
 	for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
@@ -145,18 +248,12 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 			}
 			for _, part := range cand.Content.Parts {
 				if part.Text != "" {
-					text := part.Text
-					if len(text) > prevTextLen {
-						delta := text[prevTextLen:]
-						if err := emit(llm.TextDeltaEvent{Delta: delta}); err != nil {
-							return nil, err
-						}
-						prevTextLen = len(text)
-					}
 					if part.Thought {
-						if err := emit(llm.ThinkingDeltaEvent{Delta: text}); err != nil {
+						if err := emit(llm.ThinkingDeltaEvent{Delta: part.Text}); err != nil {
 							return nil, err
 						}
+					} else if err := emit(llm.TextDeltaEvent{Delta: part.Text}); err != nil {
+						return nil, err
 					}
 				}
 				if part.FunctionCall != nil {
@@ -196,13 +293,6 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 				}
 			}
 		}
-	}
-
-	if len(resultMessages) == 0 && prevTextLen > 0 {
-		// Pure text response
-		// We don't have the full text stored; reconstruct from last chunk if needed.
-		// For simplicity, emit an empty text message since the deltas were already streamed.
-		// The consumer already got the text via TextDeltaEvents.
 	}
 
 	if err := emit(llm.MessageEndEvent{}); err != nil {
@@ -264,21 +354,11 @@ func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) *genai.Generate
 		}
 	}
 	if req.Thinking != llm.ThinkingOff {
-		budget := map[llm.ThinkingLevel]int{
-			llm.ThinkingMinimal: 512,
-			llm.ThinkingLow:     1000,
-			llm.ThinkingMedium:  4000,
-			llm.ThinkingHigh:    16000,
-		}[req.Thinking]
-		if b, ok := req.ThinkingBudgets[req.Thinking]; ok {
-			budget = b
-		}
-		if req.ProviderHints.Gemini != nil && req.ProviderHints.Gemini.ThinkingBudget > 0 {
-			budget = req.ProviderHints.Gemini.ThinkingBudget
-		}
-		budget32 := int32(budget)
+		config.ThinkingConfig = thinkingConfigFor(req)
+	} else if class := classifyGemini(req.Model); class.usesThinkingLevel() {
 		config.ThinkingConfig = &genai.ThinkingConfig{
-			ThinkingBudget: &budget32,
+			ThinkingLevel:   class.disabledThinkingLevel(),
+			IncludeThoughts: false,
 		}
 	}
 	return config
