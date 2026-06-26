@@ -167,6 +167,45 @@ func TestMaxTokensSentWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestChatTemplateThinkingFormat(t *testing.T) {
+	tests := []struct {
+		name        string
+		thinking    llm.ThinkingLevel
+		wantEnabled bool
+	}{
+		{name: "thinking on enables chat-template thinking", thinking: llm.ThinkingHigh, wantEnabled: true},
+		{name: "thinking off disables chat-template thinking", thinking: llm.ThinkingOff, wantEnabled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given a chat-template compat provider (Qwen3/DeepSeek-R1 behind vLLM)
+			// when the request body is built
+			body := captureBody(t, Config{Compat: Compat{ThinkingFormat: ThinkingChatTemplate}}, llm.LLMRequest{
+				Model:    "qwen3-32b",
+				Thinking: tt.thinking,
+				Messages: []llm.Message{{Role: "user", Content: llm.TextContent{Text: "hi"}}},
+			})
+
+			// then enable_thinking is emitted under chat_template_kwargs
+			kwargs, ok := body["chat_template_kwargs"].(map[string]any)
+			if !ok {
+				t.Fatalf("chat_template_kwargs missing or wrong type: %v", body["chat_template_kwargs"])
+			}
+			if kwargs["enable_thinking"] != tt.wantEnabled {
+				t.Errorf("enable_thinking = %v, want %v", kwargs["enable_thinking"], tt.wantEnabled)
+			}
+
+			// and neither reasoning_effort nor the deepseek thinking field appears
+			if _, present := body["reasoning_effort"]; present {
+				t.Errorf("reasoning_effort present (%v), want absent for chat-template", body["reasoning_effort"])
+			}
+			if _, present := body["thinking"]; present {
+				t.Errorf("thinking field present (%v), want absent for chat-template", body["thinking"])
+			}
+		})
+	}
+}
+
 func TestCapabilitiesDeepSeekReportsThinking(t *testing.T) {
 	// given a provider configured for the deepseek thinking format
 	p, err := New(Config{BaseURL: "http://x", Compat: Compat{ThinkingFormat: ThinkingDeepSeek}})

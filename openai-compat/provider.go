@@ -190,6 +190,10 @@ func (p *Provider) applyThinking(body map[string]any, req llm.LLMRequest) {
 		}
 		return
 	}
+	if compat.ThinkingFormat == ThinkingChatTemplate {
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": req.Thinking != llm.ThinkingOff}
+		return
+	}
 	if req.Thinking != llm.ThinkingOff {
 		if e := reasoningEffort(req); e != "" {
 			body["reasoning_effort"] = e

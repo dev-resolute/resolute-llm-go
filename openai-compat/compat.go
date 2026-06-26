@@ -12,6 +12,9 @@ const (
 	// ThinkingDeepSeek toggles reasoning via thinking:{type:enabled|disabled},
 	// optionally alongside reasoning_effort. Used by DeepSeek V4 on opencode-go.
 	ThinkingDeepSeek
+	// ThinkingChatTemplate toggles reasoning via chat_template_kwargs.enable_thinking.
+	// Used by local reasoning models (Qwen3, DeepSeek-R1) served behind vLLM/llama.cpp.
+	ThinkingChatTemplate
 )
 
 // Compat carries per-model behaviour the caller supplies because pi-llm-go ships
