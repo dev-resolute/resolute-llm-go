@@ -9,4 +9,5 @@ var (
 	ErrUnsupportedFeature   = errors.New("unsupported feature")
 	ErrMalformedResponse    = errors.New("malformed provider response")
 	ErrTransportUnsupported = errors.New("transport not supported by provider")
+	ErrContextOverflow      = errors.New("context length exceeded")
 )

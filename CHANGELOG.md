@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0] - 2026-06-26
+
+### Added
+
+- **`chat-template` thinking format (LLM-7).** `openaicompat.Compat.ThinkingFormat` gains
+  `ThinkingChatTemplate`, which toggles reasoning via `chat_template_kwargs.enable_thinking`
+  derived from the request's `ThinkingLevel`. For local reasoning models (Qwen3, DeepSeek-R1)
+  served behind vLLM / llama.cpp where thinking is controlled by chat-template kwargs rather than
+  `reasoning_effort`. Builds on the LLM-6 `Compat` seam (ADR-0008).
+- **`ErrContextOverflow` detection (LLM-8).** New sentinel `llm.ErrContextOverflow` and
+  `llm.AsContextOverflow(err)`, which wraps a provider error when its message reports the model's
+  maximum context length was exceeded — matching both the `maximum context length of N tokens`
+  and the parenthesized `maximum context length (N)` forms — so callers can react via `errors.Is`.
+  Other errors and nil pass through unchanged. The detection half of the deferred auto-compaction
+  story (ADR-0003).
+
 ## [0.4.0] - 2026-06-26
 
 ### Added
