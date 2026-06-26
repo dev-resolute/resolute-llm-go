@@ -121,31 +121,39 @@ func TestRunCallerCancelsMidEmit(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	wantErr := errors.New("caller cancelled")
 
+	bufferFull := make(chan struct{})
 	produce := func(ctx context.Context, req LLMRequest, emit func(LLMEvent) error, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) ([]Message, error) {
-		// Fill the buffer so the next emit blocks on ctx.Done().
-		for i := 0; i < DefaultEventBufferSize+2; i++ {
-			if i == DefaultEventBufferSize {
-				cancel(wantErr)
-			}
+		// With nothing draining yet, exactly DefaultEventBufferSize emits fit in the
+		// buffer and succeed.
+		for i := 0; i < DefaultEventBufferSize; i++ {
 			if err := emit(TextDeltaEvent{Delta: fmt.Sprintf("%d", i)}); err != nil {
 				return nil, err
 			}
+		}
+		// The buffer is now full, so this emit blocks until the caller cancels.
+		close(bufferFull)
+		if err := emit(TextDeltaEvent{Delta: "blocked"}); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	}
 
 	stream := Run(ctx, LLMRequest{Model: "test"}, produce)
 
+	// Cancel only once an emit is blocked on the full buffer. Reading Done before
+	// draining Events keeps the buffer full while the blocked emit resolves, so it
+	// can only observe ctx.Done() — never a slot freed by a concurrent drain.
+	<-bufferFull
+	cancel(wantErr)
+	result := <-stream.Done
+
 	var got []LLMEvent
 	for ev := range stream.Events {
 		got = append(got, ev)
 	}
-	result := <-stream.Done
 
-	// The cancellation and the buffered send race; we may see DefaultEventBufferSize
-	// or DefaultEventBufferSize+1 events before emit returns the error.
-	if len(got) < DefaultEventBufferSize || len(got) > DefaultEventBufferSize+1 {
-		t.Fatalf("expected %d or %d events before cancellation blocked, got %d", DefaultEventBufferSize, DefaultEventBufferSize+1, len(got))
+	if len(got) != DefaultEventBufferSize {
+		t.Fatalf("expected %d buffered events before the blocked emit, got %d", DefaultEventBufferSize, len(got))
 	}
 	if result.Err == nil {
 		t.Fatal("expected error after cancellation")
