@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 func liveProvider(t *testing.T) llm.LLMProvider {

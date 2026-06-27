@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0] - 2026-06-26
+
+### Changed
+
+- **Module path changed to `github.com/dev-resolute/resolute-llm-go`** (was
+  `github.com/resolute-sh/pi-llm-go`), part of the `resolute-sh`→`dev-resolute` rebrand. Update your
+  import path: `go get github.com/dev-resolute/resolute-llm-go`. **No behaviour change** — pure
+  module-path rename; the full test suite passes unchanged. ADR-0005 carries a rebrand note.
+
 ## [0.5.0] - 2026-06-26
 
 ### Added

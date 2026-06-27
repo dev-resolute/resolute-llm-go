@@ -18,15 +18,15 @@ Provider-agnostic LLM abstraction for Go, extracted from the Pi agent framework.
 ## Install
 
 ```bash
-go get github.com/resolute-sh/pi-llm-go
+go get github.com/dev-resolute/resolute-llm-go
 ```
 
 ## Usage
 
 ```go
 import (
-    "github.com/resolute-sh/pi-llm-go"
-    "github.com/resolute-sh/pi-llm-go/openai-compat"
+    "github.com/dev-resolute/resolute-llm-go"
+    "github.com/dev-resolute/resolute-llm-go/openai-compat"
 )
 
 provider, _ := openaicompat.New(openaicompat.Config{

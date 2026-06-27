@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // TestLiveOpenCodeGoDeepSeekThinking exercises DeepSeek V4 on the opencode-go

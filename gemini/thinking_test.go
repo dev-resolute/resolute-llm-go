@@ -3,7 +3,7 @@ package gemini
 import (
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 func thinkingBudget(t *testing.T, thinking llm.ThinkingLevel) (int32, bool) {

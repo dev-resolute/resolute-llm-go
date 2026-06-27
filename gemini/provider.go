@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 	"google.golang.org/genai"
 )
 

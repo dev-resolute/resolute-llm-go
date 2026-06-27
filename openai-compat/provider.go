@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // Config holds the OpenAI-compatible provider configuration.

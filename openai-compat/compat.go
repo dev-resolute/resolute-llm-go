@@ -1,6 +1,6 @@
 package openaicompat
 
-import "github.com/resolute-sh/pi-llm-go"
+import "github.com/dev-resolute/resolute-llm-go"
 
 // ThinkingFormat selects how an OpenAI-compatible model toggles reasoning on the
 // wire. Adding a format is a new value plus one branch in toRequestBody (ADR-0008).

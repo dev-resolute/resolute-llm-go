@@ -1,4 +1,4 @@
-module github.com/resolute-sh/pi-llm-go
+module github.com/dev-resolute/resolute-llm-go
 
 go 1.24
 

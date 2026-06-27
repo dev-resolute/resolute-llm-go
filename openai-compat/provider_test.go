@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 func TestProviderStreamText(t *testing.T) {
@@ -410,4 +410,3 @@ func TestProviderGetAPIKeyHonorsContext(t *testing.T) {
 		t.Fatal("expected no HTTP request when ctx is cancelled")
 	}
 }
-

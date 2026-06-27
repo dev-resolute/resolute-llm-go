@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // Matcher determines whether a script step applies to the current request.
@@ -112,11 +112,11 @@ type response struct {
 
 // MockProvider is a scripted LLMProvider for tests.
 type MockProvider struct {
-	name           string
-	scripts        []scriptStep
-	called         int
-	mu             sync.Mutex
-	recordHeaders  bool
+	name            string
+	scripts         []scriptStep
+	called          int
+	mu              sync.Mutex
+	recordHeaders   bool
 	recordedHeaders map[string]string
 }
 

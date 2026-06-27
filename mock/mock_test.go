@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 func TestMockProviderExactMatch(t *testing.T) {
