@@ -15,6 +15,11 @@ const (
 	// ThinkingChatTemplate toggles reasoning via chat_template_kwargs.enable_thinking.
 	// Used by local reasoning models (Qwen3, DeepSeek-R1) served behind vLLM/llama.cpp.
 	ThinkingChatTemplate
+	// ThinkingQwen toggles reasoning via a top-level enable_thinking bool. This is
+	// the dialect Alibaba's DashScope OpenAI-compatible endpoint uses for Qwen3 —
+	// distinct from ThinkingChatTemplate, which nests the flag under
+	// chat_template_kwargs (a vLLM/SGLang convention DashScope rejects).
+	ThinkingQwen
 )
 
 // Compat carries per-model behaviour the caller supplies because pi-llm-go ships

@@ -35,10 +35,18 @@ type Provider struct {
 	client *http.Client
 	name   string
 	config Config
+	// classify resolves per-model behaviour catalog-free for the built-in provider
+	// families (xAI, Mistral, …). It is nil for a plain New, which keeps the coarse
+	// prefix heuristic; the family constructors set it.
+	classify func(model string) classification
 }
 
 // New creates a Provider from the given Config.
 func New(cfg Config) (llm.LLMProvider, error) {
+	return newProvider(cfg)
+}
+
+func newProvider(cfg Config) (*Provider, error) {
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("openai-compat: Name is required: %w", llm.ErrInvalidModel)
 	}
@@ -54,6 +62,16 @@ func (p *Provider) Name() string { return p.name }
 
 // Capabilities implements llm.LLMProvider.
 func (p *Provider) Capabilities(model string) llm.ProviderCapabilities {
+	if p.classify != nil {
+		c := p.classify(model)
+		return llm.ProviderCapabilities{
+			Streaming:         true,
+			ToolCalling:       true,
+			ParallelToolCalls: true,
+			Thinking:          c.thinking,
+			Vision:            c.vision,
+		}
+	}
 	caps := llm.ProviderCapabilities{
 		Streaming:     true,
 		ToolCalling:   true,
@@ -200,11 +218,26 @@ func (p *Provider) applyThinking(body map[string]any, req llm.LLMRequest) {
 		body["chat_template_kwargs"] = map[string]any{"enable_thinking": req.Thinking != llm.ThinkingOff}
 		return
 	}
-	if req.Thinking != llm.ThinkingOff {
+	if compat.ThinkingFormat == ThinkingQwen {
+		body["enable_thinking"] = req.Thinking != llm.ThinkingOff
+		return
+	}
+	if req.Thinking != llm.ThinkingOff && p.acceptsReasoningEffort(req.Model) {
 		if e := reasoningEffort(req); e != "" {
 			body["reasoning_effort"] = e
 		}
 	}
+}
+
+// acceptsReasoningEffort reports whether reasoning_effort may be sent for this
+// model. A plain provider always sends it (unchanged behaviour); a family with a
+// classifier omits it for models that reason but reject the param (xAI grok-4,
+// Mistral Magistral), which would otherwise return HTTP 400.
+func (p *Provider) acceptsReasoningEffort(model string) bool {
+	if p.classify == nil {
+		return true
+	}
+	return p.classify(model).reasoningEffort
 }
 
 func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {

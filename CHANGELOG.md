@@ -4,6 +4,21 @@
 
 ### Added
 
+- **xAI, Mistral, Qwen, and z.ai providers (LLM-10).** Four OpenAI-compatible targets ship as
+  configured instances of the `openai-compat` adapter (no new provider type — ADR-0001), each with
+  a constructor that fixes its base URL and thinking dialect so apps never hardcode endpoints:
+  `openaicompat.XAI`, `Mistral`, `Qwen`, and `ZAI`, all taking a `TargetConfig` (env-sourced key via
+  `APIKey`/`GetAPIKey`, plus optional headers). Per-model capabilities (thinking, vision) are
+  resolved by a per-family classifier (ADR-0008, catalog-free), replacing the coarse
+  `strings.HasPrefix(model, "o")` heuristic for these families. Thinking dialects per target: xAI and
+  Mistral use `reasoning_effort`, gated per model because grok-4 / Magistral reason but reject the
+  param (HTTP 400); Qwen uses the new top-level `enable_thinking` bool; z.ai/GLM reuses DeepSeek's
+  `thinking:{type}` shape. Each target ships table-driven classifier tests, an `httptest`
+  body-capture test for its request dialect, and an integration-gated live test keyed on
+  `XAI_API_KEY` / `MISTRAL_API_KEY` / `DASHSCOPE_API_KEY` / `ZAI_API_KEY`.
+- **`ThinkingQwen` thinking format.** New `openaicompat.ThinkingFormat` value emitting a top-level
+  `enable_thinking` bool — the dialect Alibaba's DashScope compatible-mode endpoint uses for Qwen3,
+  distinct from `ThinkingChatTemplate` (which nests the flag under `chat_template_kwargs`).
 - **Named `openai-compat` providers (LLM-9).** `openaicompat.Config` gains a required `Name`
   field; `New` returns `ErrInvalidModel` when it is empty, and `Provider.Name()` reports it
   (replacing the hardcoded `"openai-compat"`). This lets multiple OpenAI-compatible targets
