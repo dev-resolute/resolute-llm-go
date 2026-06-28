@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0] - unreleased
+
+### Added
+
+- **Named `openai-compat` providers (LLM-9).** `openaicompat.Config` gains a required `Name`
+  field; `New` returns `ErrInvalidModel` when it is empty, and `Provider.Name()` reports it
+  (replacing the hardcoded `"openai-compat"`). This lets multiple OpenAI-compatible targets
+  (e.g. `xai`, `mistral`) coexist in the agent registry under distinct names instead of silently
+  shadowing one another. Existing single-instance callers pass `Name: "openai-compat"`.
+
 ## [0.6.0] - 2026-06-26
 
 ### Changed

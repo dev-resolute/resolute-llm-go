@@ -20,7 +20,7 @@ func TestLiveOpenCodeGoDeepSeekThinking(t *testing.T) {
 		t.Skip("OPENCODE_API_KEY not set")
 	}
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: "https://opencode.ai/zen/go/v1",
 		APIKey:  key,
 		Compat: Compat{

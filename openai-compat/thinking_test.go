@@ -26,7 +26,7 @@ func captureReasoningEffort(t *testing.T, thinking llm.ThinkingLevel) (string, b
 	}))
 	t.Cleanup(ts.Close)
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestThinkingBudgetsIgnored(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

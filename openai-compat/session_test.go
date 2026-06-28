@@ -32,7 +32,7 @@ func captureRequest(t *testing.T, req llm.LLMRequest) capturedRequest {
 	}))
 	t.Cleanup(ts.Close)
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

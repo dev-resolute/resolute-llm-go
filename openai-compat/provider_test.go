@@ -30,7 +30,7 @@ func TestProviderStreamText(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestProviderStreamToolCall(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestProviderHTTPError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestProviderPerCallHeaders(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestProviderPerCallHeaderWinsOnConflict(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		Headers: map[string]string{"X-Test": "from-config"},
 	})
@@ -220,7 +220,7 @@ func TestProviderGetAPIKeyCalledOnce(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		GetAPIKey: func(ctx context.Context) (string, error) {
 			count++
@@ -257,7 +257,7 @@ func TestProviderGetAPIKeyUsedAsAuth(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		GetAPIKey: func(ctx context.Context) (string, error) {
 			return "refresh-token-abc", nil
@@ -290,7 +290,7 @@ func TestProviderGetAPIKeyNilFallsBackToStatic(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		APIKey:  "static",
 	})
@@ -321,7 +321,7 @@ func TestProviderGetAPIKeyEmptyStringFallsBack(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		APIKey:  "static",
 		GetAPIKey: func(ctx context.Context) (string, error) {
@@ -349,7 +349,7 @@ func TestProviderGetAPIKeyErrorAborts(t *testing.T) {
 	defer ts.Close()
 
 	wantErr := errors.New("expired refresh token")
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		GetAPIKey: func(ctx context.Context) (string, error) {
 			return "", wantErr
@@ -385,7 +385,7 @@ func TestProviderGetAPIKeyHonorsContext(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(errors.New("ctx cancelled"))
 
-	p, err := New(Config{
+	p, err := New(Config{Name: "openai-compat",
 		BaseURL: ts.URL,
 		GetAPIKey: func(ctx context.Context) (string, error) {
 			if ctx.Err() != nil {

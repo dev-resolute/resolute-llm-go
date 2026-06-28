@@ -22,7 +22,7 @@ func streamWithTransport(t *testing.T, transport llm.TransportPreference) error 
 	}))
 	t.Cleanup(ts.Close)
 
-	p, err := New(Config{BaseURL: ts.URL})
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

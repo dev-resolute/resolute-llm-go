@@ -18,6 +18,10 @@ import (
 
 // Config holds the OpenAI-compatible provider configuration.
 type Config struct {
+	// Name is the provider's identifier, used in model references like
+	// "<name>/<model-id>" and as the registry key. Distinct OpenAI-compatible
+	// targets (e.g. "xai", "mistral") must each set a distinct Name.
+	Name      string
 	APIKey    string
 	GetAPIKey func(ctx context.Context) (string, error)
 	BaseURL   string
@@ -35,12 +39,14 @@ type Provider struct {
 
 // New creates a Provider from the given Config.
 func New(cfg Config) (llm.LLMProvider, error) {
+	if cfg.Name == "" {
+		return nil, fmt.Errorf("openai-compat: Name is required: %w", llm.ErrInvalidModel)
+	}
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("openai-compat: BaseURL is required: %w", llm.ErrInvalidModel)
 	}
 	client := &http.Client{Timeout: 120 * time.Second}
-	name := "openai-compat"
-	return &Provider{client: client, name: name, config: cfg}, nil
+	return &Provider{client: client, name: cfg.Name, config: cfg}, nil
 }
 
 // Name implements llm.LLMProvider.

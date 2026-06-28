@@ -29,6 +29,7 @@ func captureBody(t *testing.T, cfg Config, req llm.LLMRequest) map[string]any {
 	defer ts.Close()
 
 	cfg.BaseURL = ts.URL
+	cfg.Name = "openai-compat"
 	p, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -208,7 +209,7 @@ func TestChatTemplateThinkingFormat(t *testing.T) {
 
 func TestCapabilitiesDeepSeekReportsThinking(t *testing.T) {
 	// given a provider configured for the deepseek thinking format
-	p, err := New(Config{BaseURL: "http://x", Compat: Compat{ThinkingFormat: ThinkingDeepSeek}})
+	p, err := New(Config{Name: "openai-compat", BaseURL: "http://x", Compat: Compat{ThinkingFormat: ThinkingDeepSeek}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
