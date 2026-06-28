@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.7.0] - unreleased
+## [0.7.0] - 2026-06-28
+
+> **Live validation:** Mistral confirmed end-to-end against the live API; xAI and z.ai are
+> dialect-verified (valid keys, request shapes accepted at the API boundary — full end-to-end
+> pending account credits); Qwen is deferred (DashScope enterprise key). All four are covered by
+> deterministic classifier and `httptest` body-capture tests.
 
 ### Added
 
