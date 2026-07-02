@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - 2026-07-01
 
 > **Live validation:** thought-signature round trip confirmed end-to-end against live
 > `gemini-3.1-pro-preview` (`TestLiveGemini3ToolCallThoughtSignatureRoundTrip`); without the fix the
