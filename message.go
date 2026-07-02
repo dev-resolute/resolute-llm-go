@@ -27,6 +27,10 @@ type ToolCallContent struct {
 	CallID   string
 	ToolName string
 	Args     json.RawMessage
+	// ThoughtSignature is an opaque provider token bound to this tool call
+	// (Gemini 3 thought signatures). Callers replaying history must carry it
+	// back verbatim; empty for providers without one.
+	ThoughtSignature []byte
 }
 
 func (ToolCallContent) isContent() {}

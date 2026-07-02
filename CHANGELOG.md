@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+> **Live validation:** thought-signature round trip confirmed end-to-end against live
+> `gemini-3.1-pro-preview` (`TestLiveGemini3ToolCallThoughtSignatureRoundTrip`); without the fix the
+> second turn is rejected with `400 INVALID_ARGUMENT: Function call is missing a thought_signature`.
+
+### Added
+
+- **Gemini 3 thought signatures.** `llm.ToolCallContent` and `llm.ToolCallStartEvent` gain an
+  opaque `ThoughtSignature []byte` (additive, nil for providers without one). The Gemini provider
+  captures `part.ThoughtSignature` from streamed function-call parts and replays it verbatim when
+  history is converted back to genai contents — Gemini 3 rejects a replayed tool call without its
+  signature, which broke every multi-turn tool loop on `gemini-3*` models. Callers that round-trip
+  `StreamResult.Messages` get the fix for free; event-driven transcripts must carry the new event
+  field onto the replayed `ToolCallContent`.
+
+### Fixed
+
+- **Tool calls no longer lost to chunk layout.** The Gemini stream loop only assembled
+  `StreamResult.Messages` (and emitted `ToolCallEndEvent`) from function-call parts present in the
+  same chunk as the finish reason; when the API delivered the call in an earlier chunk, the tool
+  call vanished from the result (intermittent, observed live). Calls are now accumulated as parts
+  arrive and flushed on finish, with a stream-end fallback.
+
 ## [0.7.0] - 2026-06-28
 
 > **Live validation:** Mistral confirmed end-to-end against the live API; xAI and z.ai are

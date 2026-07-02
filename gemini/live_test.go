@@ -66,6 +66,82 @@ func TestLiveGeminiThinkingSurfaces_2_5_Flash(t *testing.T) {
 	}
 }
 
+func TestLiveGemini3ToolCallThoughtSignatureRoundTrip(t *testing.T) {
+	// given a live Gemini 3 model and a weather tool
+	p := liveProvider(t)
+	const model = "gemini-3.1-pro-preview"
+	weather := llm.ToolDef{
+		Name:        "get_weather",
+		Description: "Get the current weather for a city.",
+		Schema:      []byte(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+	}
+	ask := llm.Message{Role: "user", Content: llm.TextContent{Text: "What is the weather in Paris right now? Use the tool."}}
+
+	// when the model calls the tool
+	turn1 := p.Stream(context.Background(), llm.LLMRequest{
+		Model:    model,
+		Thinking: llm.ThinkingLow,
+		Tools:    []llm.ToolDef{weather},
+		Messages: []llm.Message{ask},
+	})
+	var startSig []byte
+	for ev := range turn1.Events {
+		if e, ok := ev.(llm.ToolCallStartEvent); ok {
+			startSig = e.ThoughtSignature
+		}
+	}
+	res := <-turn1.Done
+	if res.Err != nil {
+		t.Skipf("%s not available to this key: %v", model, res.Err)
+	}
+
+	// then the tool call surfaces in the result messages with its thought signature
+	var call *llm.ToolCallContent
+	for _, m := range res.Messages {
+		if tc, ok := m.Content.(llm.ToolCallContent); ok {
+			call = &tc
+		}
+	}
+	if call == nil {
+		t.Fatal("no ToolCallContent in StreamResult.Messages (tool call lost across chunks)")
+	}
+	if len(call.ThoughtSignature) == 0 {
+		t.Error("ToolCallContent.ThoughtSignature empty; Gemini 3 requires it for replay")
+	}
+	if len(startSig) == 0 {
+		t.Error("ToolCallStartEvent.ThoughtSignature empty; event consumers cannot persist it")
+	}
+
+	// and replaying the tool call with its signature completes the turn
+	turn2 := p.Stream(context.Background(), llm.LLMRequest{
+		Model:    model,
+		Thinking: llm.ThinkingLow,
+		Tools:    []llm.ToolDef{weather},
+		Messages: []llm.Message{
+			ask,
+			{Role: "assistant", Content: *call},
+			{Role: "tool", Content: llm.ToolResultContent{
+				CallID:   call.CallID,
+				ToolName: call.ToolName,
+				Content:  `{"temperature_c": 22, "condition": "sunny"}`,
+			}},
+		},
+	})
+	var answer strings.Builder
+	for ev := range turn2.Events {
+		if e, ok := ev.(llm.TextDeltaEvent); ok {
+			answer.WriteString(e.Delta)
+		}
+	}
+	res2 := <-turn2.Done
+	if res2.Err != nil {
+		t.Fatalf("turn 2 rejected (thought signature not accepted): %v", res2.Err)
+	}
+	if !strings.Contains(answer.String(), "22") {
+		t.Errorf("answer does not use the tool result (want mention of 22); got %q", answer.String())
+	}
+}
+
 func TestLiveGeminiThinkingSurfaces_3_Flash(t *testing.T) {
 	// given a live Gemini 3 model (skips when the key has no access to it)
 	p := liveProvider(t)

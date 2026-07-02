@@ -50,6 +50,10 @@ type ToolCallStartEvent struct {
 	CallID   string
 	ToolName string
 	Args     json.RawMessage
+	// ThoughtSignature is an opaque provider token bound to this tool call
+	// (Gemini 3 thought signatures). Consumers persisting the transcript must
+	// carry it onto the replayed ToolCallContent; empty for providers without one.
+	ThoughtSignature []byte
 }
 
 func (ToolCallStartEvent) isLLMEvent() {}
