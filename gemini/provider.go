@@ -231,7 +231,23 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	config := toGeminiConfig(req, sysInstr)
 
 	var resultMessages []llm.Message
+	var pendingToolCalls []llm.ToolCallContent
 	emittedToolCalls := map[string]bool{}
+
+	// flushToolCalls ends every accumulated tool call and moves it into the
+	// result messages. Tool-call parts and the finish reason can arrive in
+	// different chunks, so calls are collected as parts stream in and flushed
+	// on finish (or at stream end as a fallback).
+	flushToolCalls := func() error {
+		for _, call := range pendingToolCalls {
+			if err := emit(llm.ToolCallEndEvent{CallID: call.CallID}); err != nil {
+				return err
+			}
+			resultMessages = append(resultMessages, llm.Message{Role: "assistant", Content: call})
+		}
+		pendingToolCalls = nil
+		return nil
+	}
 
 	for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
 		if err != nil {
@@ -261,38 +277,35 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 					if !emittedToolCalls[fc.ID] {
 						emittedToolCalls[fc.ID] = true
 						args, _ := json.Marshal(fc.Args)
+						call := llm.ToolCallContent{
+							CallID:           fc.ID,
+							ToolName:         fc.Name,
+							Args:             args,
+							ThoughtSignature: part.ThoughtSignature,
+						}
 						if err := emit(llm.ToolCallStartEvent{
-							CallID:   fc.ID,
-							ToolName: fc.Name,
-							Args:     args,
+							CallID:           call.CallID,
+							ToolName:         call.ToolName,
+							Args:             call.Args,
+							ThoughtSignature: call.ThoughtSignature,
 						}); err != nil {
 							return nil, err
 						}
+						pendingToolCalls = append(pendingToolCalls, call)
 					}
 				}
 			}
 			if cand.FinishReason != "" {
-				// Emit tool call ends for any pending tool calls
-				if cand.Content != nil {
-					for _, part := range cand.Content.Parts {
-						if part.FunctionCall != nil {
-							if err := emit(llm.ToolCallEndEvent{CallID: part.FunctionCall.ID}); err != nil {
-								return nil, err
-							}
-							args, _ := json.Marshal(part.FunctionCall.Args)
-							resultMessages = append(resultMessages, llm.Message{
-								Role: "assistant",
-								Content: llm.ToolCallContent{
-									CallID:   part.FunctionCall.ID,
-									ToolName: part.FunctionCall.Name,
-									Args:     args,
-								},
-							})
-						}
-					}
+				if err := flushToolCalls(); err != nil {
+					return nil, err
 				}
 			}
 		}
+	}
+
+	// Fallback for streams that end without a finish-reason chunk.
+	if err := flushToolCalls(); err != nil {
+		return nil, err
 	}
 
 	if err := emit(llm.MessageEndEvent{}); err != nil {
@@ -321,7 +334,9 @@ func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content)
 		case llm.TextContent:
 			contents = append(contents, genai.NewContentFromText(c.Text, role))
 		case llm.ToolCallContent:
-			contents = append(contents, genai.NewContentFromFunctionCall(c.ToolName, mustUnmarshalMap(c.Args), role))
+			part := genai.NewPartFromFunctionCall(c.ToolName, mustUnmarshalMap(c.Args))
+			part.ThoughtSignature = c.ThoughtSignature
+			contents = append(contents, &genai.Content{Role: string(role), Parts: []*genai.Part{part}})
 		case llm.ToolResultContent:
 			name := c.ToolName
 			if name == "" {
