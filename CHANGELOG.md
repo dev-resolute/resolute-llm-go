@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.1] - 2026-07-04
+
+### Fixed
+
+- **Deterministic Gemini 4xx client errors now classify as `ErrProviderFatal` (LLM-11).** The
+  gemini adapter wraps stream errors carrying `genai.APIError` HTTP 400/401/403/404 or status
+  `INVALID_ARGUMENT`/`FAILED_PRECONDITION` in `llm.ErrProviderFatal`, so retry ladders
+  (resolute-harness-go `runRecovered`) settle such requests on the first attempt instead of
+  burning an attempt budget on a request the provider rejects identically every time. 429
+  (`RESOURCE_EXHAUSTED`), 5xx, and transport errors stay retryable, and context-overflow 400s
+  pass through unwrapped so LLM-8 compact-and-retry handling keeps working. The underlying
+  `genai.APIError` remains reachable via `errors.As`.
+
 ## [0.8.0] - 2026-07-01
 
 > **Live validation:** thought-signature round trip confirmed end-to-end against live

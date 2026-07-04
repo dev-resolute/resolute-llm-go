@@ -5,6 +5,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -251,6 +252,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 
 	for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
 		if err != nil {
+			err = classifyStreamError(err)
 			transient := isTransientError(err)
 			if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
 				return nil, emitErr
@@ -403,4 +405,32 @@ func isTransientError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "429") || strings.Contains(msg, "503") || strings.Contains(msg, "502") || strings.Contains(msg, "504")
+}
+
+// classifyStreamError wraps deterministic client errors in llm.ErrProviderFatal
+// so retry ladders stop retrying requests Gemini will reject identically every
+// time (LLM-11): HTTP 400/401/403/404 and the INVALID_ARGUMENT /
+// FAILED_PRECONDITION statuses. Quota (429), server (5xx), and transport errors
+// pass through unchanged, as do context-overflow 400s — callers handle those by
+// compacting and retrying (LLM-8), which a fatal wrap could suppress.
+func classifyStreamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	if errors.Is(llm.AsContextOverflow(err), llm.ErrContextOverflow) {
+		return err
+	}
+	switch apiErr.Code {
+	case 400, 401, 403, 404:
+		return fmt.Errorf("%w: %w", llm.ErrProviderFatal, err)
+	}
+	switch apiErr.Status {
+	case "INVALID_ARGUMENT", "FAILED_PRECONDITION":
+		return fmt.Errorf("%w: %w", llm.ErrProviderFatal, err)
+	}
+	return err
 }
