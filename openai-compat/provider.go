@@ -241,6 +241,7 @@ func (p *Provider) acceptsReasoningEffort(model string) bool {
 }
 
 func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
+	ids := newToolCallIDUniquifier()
 	var out []map[string]any
 	for _, msg := range messages {
 		var m map[string]any
@@ -248,11 +249,12 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 		case llm.TextContent:
 			m = map[string]any{"role": msg.Role, "content": c.Text}
 		case llm.ToolCallContent:
+			callID := ids.call(c.CallID)
 			m = map[string]any{
 				"role": "assistant",
 				"tool_calls": []map[string]any{
 					{
-						"id":   c.CallID,
+						"id":   callID,
 						"type": "function",
 						"function": map[string]any{
 							"name":      c.ToolName,
@@ -264,7 +266,7 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 		case llm.ToolResultContent:
 			m = map[string]any{
 				"role":         "tool",
-				"tool_call_id": c.CallID,
+				"tool_call_id": ids.result(c.CallID),
 				"content":      c.Content,
 			}
 		case llm.ThinkingContent:
