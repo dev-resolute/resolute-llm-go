@@ -6,7 +6,7 @@
 
 **LLMProvider**: The single interface every concrete provider implements. Exposes streaming, tool calls, and thinking blocks in a normalized event shape.
 
-**OpenAI-compatible adapter**: One `LLMProvider` implementation, parameterized by base URL, covering OpenAI, Fireworks, OpenCode Zen, the hosted providers xAI/Mistral/Qwen/z.ai, and locally-hosted servers (Ollama, vLLM, llama.cpp server, LM Studio). The same code is configured N times under distinct `Name`s.
+**OpenAI-compatible adapter**: One `LLMProvider` implementation, parameterized by base URL, covering OpenAI, Fireworks, OpenCode Zen, the hosted providers xAI/Mistral/Qwen/z.ai, and locally-hosted servers (Ollama, vLLM, llama.cpp server, LM Studio). The same code is configured N times under distinct `Name`s. Tool call IDs are uniquified at the conversion boundary (empty IDs get `call_N`, duplicates get occurrence suffixes) so cross-provider transcripts replay with unambiguous call/result pairing.
 
 **Config.Name**: Required identifier on `openaicompat.Config` (LLM-9), used as the registry key and in `<name>/<model>` refs. `New` rejects an empty `Name`, so multiple compat targets coexist instead of shadowing one another.
 

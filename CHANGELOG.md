@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.2] - 2026-07-21
+
+### Fixed
+
+- **OpenAI-compatible conversion keeps tool call IDs unique on cross-provider
+  replay (port of upstream 0.81.0, pi#6854).** `toOpenAIMessages` previously
+  replayed `ToolCallContent.CallID` verbatim as both `tool_calls[].id` and the
+  matching `tool_call_id`. Transcripts crossing providers — e.g. Gemini
+  function calls, whose IDs are empty — produced duplicate or empty IDs on the
+  wire, breaking call/result pairing. Conversion now assigns `call_N` to empty
+  IDs and suffixes duplicates (`id_2`, `id_3`, …, capped at OpenAI's 40-char
+  limit), remapping tool results to their call in occurrence order. Unique
+  non-empty IDs pass through unchanged.
+
 ## [0.8.1] - 2026-07-04
 
 ### Fixed
