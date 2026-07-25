@@ -344,7 +344,18 @@ func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content)
 			if name == "" {
 				name = c.CallID
 			}
-			contents = append(contents, genai.NewContentFromFunctionResponse(name, map[string]any{"result": c.Content}, role))
+			result := c.Content
+			if result == "" && len(c.Images) > 0 {
+				result = "(see attached image)"
+			}
+			contents = append(contents, genai.NewContentFromFunctionResponse(name, map[string]any{"result": result}, role))
+			if len(c.Images) > 0 {
+				parts := []*genai.Part{{Text: "Tool result image:"}}
+				for _, img := range c.Images {
+					parts = append(parts, &genai.Part{InlineData: &genai.Blob{MIMEType: img.MimeType, Data: img.Data}})
+				}
+				contents = append(contents, &genai.Content{Role: "user", Parts: parts})
+			}
 		case llm.ImageContent:
 			contents = append(contents, &genai.Content{
 				Role:  string(role),
