@@ -255,7 +255,18 @@ func imageURLPart(img llm.ImageContent) map[string]any {
 func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 	ids := newToolCallIDUniquifier()
 	var out []map[string]any
+	var pendingImages []map[string]any
+	flushToolImages := func() {
+		if len(pendingImages) == 0 {
+			return
+		}
+		out = append(out, map[string]any{"role": "user", "content": pendingImages})
+		pendingImages = nil
+	}
 	for _, msg := range messages {
+		if _, isToolResult := msg.Content.(llm.ToolResultContent); !isToolResult {
+			flushToolImages()
+		}
 		var m map[string]any
 		switch c := msg.Content.(type) {
 		case llm.TextContent:
@@ -276,10 +287,20 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 				},
 			}
 		case llm.ToolResultContent:
+			// Empty tool text becomes a placeholder; images from a run of
+			// consecutive tool results are hoisted and batched into one
+			// trailing user message (upstream 0.82.0 behaviour).
+			text := c.Content
+			if text == "" {
+				text = "(no tool output)"
+			}
 			m = map[string]any{
 				"role":         "tool",
 				"tool_call_id": ids.result(c.CallID),
-				"content":      c.Content,
+				"content":      text,
+			}
+			for _, img := range c.Images {
+				pendingImages = append(pendingImages, imageURLPart(img))
 			}
 		case llm.ThinkingContent:
 			m = map[string]any{"role": msg.Role, "content": c.Text}
@@ -294,6 +315,7 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 		ensureReasoningContent(m, compat)
 		out = append(out, m)
 	}
+	flushToolImages()
 	return out
 }
 
