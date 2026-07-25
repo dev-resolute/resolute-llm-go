@@ -62,18 +62,83 @@ func TestToOpenAIMessagesToolResultImageBatching(t *testing.T) {
 		t.Fatalf("tail roles = %v, want [... tool tool user]", roles)
 	}
 	parts := out[n-1]["content"].([]map[string]any)
-	if len(parts) != 2 {
-		t.Fatalf("hoisted image parts = %d, want 2 (batched)", len(parts))
+	if len(parts) != 3 {
+		t.Fatalf("hoisted content parts = %d, want 3 (1 text marker + 2 batched images)", len(parts))
 	}
-	for _, p := range parts {
+	if parts[0]["type"] != "text" || parts[0]["text"] != "Attached image(s) from tool result:" {
+		t.Errorf("part[0] = %#v, want text marker %q", parts[0], "Attached image(s) from tool result:")
+	}
+	// Images appear in input order: byte {1} then byte {2}.
+	wantURLs := []string{"data:image/png;base64,AQ==", "data:image/png;base64,Ag=="}
+	for i, p := range parts[1:] {
 		if p["type"] != "image_url" {
-			t.Errorf("part type = %v, want image_url", p["type"])
+			t.Errorf("part[%d] type = %v, want image_url", i+1, p["type"])
+		}
+		urlObj := p["image_url"].(map[string]any)
+		if urlObj["url"] != wantURLs[i] {
+			t.Errorf("part[%d] url = %v, want %v", i+1, urlObj["url"], wantURLs[i])
 		}
 	}
 	// tool messages keep their text
 	if out[n-3]["content"] != "Read image file [image/png]" {
 		t.Errorf("tool text = %v, want kept", out[n-3]["content"])
 	}
+}
+
+// TestToOpenAIMessagesToolResultImageMidRunFlush pins the run-boundary flush:
+// two separate runs of tool-result images, split by an intervening assistant
+// text message, must each hoist into their OWN trailing user message
+// immediately after their run — not get batched together into one.
+func TestToOpenAIMessagesToolResultImageMidRunFlush(t *testing.T) {
+	img := func(b byte) []llm.ImageContent {
+		return []llm.ImageContent{{Data: []byte{b}, MimeType: "image/png"}}
+	}
+	msgs := []llm.Message{
+		{Role: "user", Content: llm.TextContent{Text: "Read two images separately"}},
+		{Role: "assistant", Content: llm.ToolCallContent{CallID: "tool-1", ToolName: "read"}},
+		{Role: "tool", Content: llm.ToolResultContent{CallID: "tool-1", ToolName: "read",
+			Content: "Read image file [image/png]", Images: img(1)}},
+		{Role: "assistant", Content: llm.TextContent{Text: "Got the first image, reading the second"}},
+		{Role: "assistant", Content: llm.ToolCallContent{CallID: "tool-2", ToolName: "read"}},
+		{Role: "tool", Content: llm.ToolResultContent{CallID: "tool-2", ToolName: "read",
+			Content: "Read image file [image/png]", Images: img(2)}},
+	}
+	out := toOpenAIMessages(msgs, Compat{})
+	var roles []string
+	for _, m := range out {
+		roles = append(roles, m["role"].(string))
+	}
+	want := []string{"user", "assistant", "tool", "user", "assistant", "assistant", "tool", "user"}
+	if len(roles) != len(want) {
+		t.Fatalf("roles = %v, want %v", roles, want)
+	}
+	for i := range want {
+		if roles[i] != want[i] {
+			t.Fatalf("roles = %v, want %v", roles, want)
+		}
+	}
+
+	// Two SEPARATE hoisted user messages, one right after each run, each
+	// carrying the text marker plus its own single image_url part.
+	checkHoisted := func(idx int, wantURL string) {
+		t.Helper()
+		parts, ok := out[idx]["content"].([]map[string]any)
+		if !ok || len(parts) != 2 {
+			t.Fatalf("out[%d] content = %#v, want two-part array (text marker + image)", idx, out[idx]["content"])
+		}
+		if parts[0]["type"] != "text" || parts[0]["text"] != "Attached image(s) from tool result:" {
+			t.Errorf("out[%d] part[0] = %#v, want text marker %q", idx, parts[0], "Attached image(s) from tool result:")
+		}
+		if parts[1]["type"] != "image_url" {
+			t.Errorf("out[%d] part[1] type = %v, want image_url", idx, parts[1]["type"])
+		}
+		urlObj, ok := parts[1]["image_url"].(map[string]any)
+		if !ok || urlObj["url"] != wantURL {
+			t.Errorf("out[%d] url = %v, want %v", idx, parts[1]["image_url"], wantURL)
+		}
+	}
+	checkHoisted(3, "data:image/png;base64,AQ==")
+	checkHoisted(7, "data:image/png;base64,Ag==")
 }
 
 func TestToOpenAIMessagesEmptyToolResultPlaceholder(t *testing.T) {
@@ -111,11 +176,14 @@ func TestToOpenAIMessagesEmptyToolResultWithImagePlaceholder(t *testing.T) {
 		t.Errorf("tool content = %v, want (see attached image)", out[0]["content"])
 	}
 	parts, ok := out[1]["content"].([]map[string]any)
-	if !ok || len(parts) != 1 {
-		t.Fatalf("hoisted content = %#v, want one-part array", out[1]["content"])
+	if !ok || len(parts) != 2 {
+		t.Fatalf("hoisted content = %#v, want two-part array (text marker + image)", out[1]["content"])
 	}
-	if parts[0]["type"] != "image_url" {
-		t.Errorf("part type = %v, want image_url", parts[0]["type"])
+	if parts[0]["type"] != "text" || parts[0]["text"] != "Attached image(s) from tool result:" {
+		t.Errorf("part[0] = %#v, want text marker %q", parts[0], "Attached image(s) from tool result:")
+	}
+	if parts[1]["type"] != "image_url" {
+		t.Errorf("part[1] type = %v, want image_url", parts[1]["type"])
 	}
 }
 
@@ -152,12 +220,16 @@ func TestStreamWireToolResultImageBatching(t *testing.T) {
 		t.Fatalf("last message role = %v, want user", last["role"])
 	}
 	parts, ok := last["content"].([]any)
-	if !ok || len(parts) != 1 {
-		t.Fatalf("last message content = %#v, want one-part array", last["content"])
+	if !ok || len(parts) != 2 {
+		t.Fatalf("last message content = %#v, want two-part array (text marker + image)", last["content"])
 	}
-	part, ok := parts[0].(map[string]any)
+	textPart, ok := parts[0].(map[string]any)
+	if !ok || textPart["type"] != "text" || textPart["text"] != "Attached image(s) from tool result:" {
+		t.Fatalf("part[0] = %#v, want text marker %q", parts[0], "Attached image(s) from tool result:")
+	}
+	part, ok := parts[1].(map[string]any)
 	if !ok || part["type"] != "image_url" {
-		t.Fatalf("hoisted part = %#v, want type image_url", parts[0])
+		t.Fatalf("hoisted part = %#v, want type image_url", parts[1])
 	}
 	urlObj, ok := part["image_url"].(map[string]any)
 	if !ok {

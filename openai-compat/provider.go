@@ -260,7 +260,12 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 		if len(pendingImages) == 0 {
 			return
 		}
-		out = append(out, map[string]any{"role": "user", "content": pendingImages})
+		// Leading text part matches upstream openai-completions.ts:1244-1252,
+		// which prepends a fixed marker before the batched image_url parts.
+		content := append([]map[string]any{
+			{"type": "text", "text": "Attached image(s) from tool result:"},
+		}, pendingImages...)
+		out = append(out, map[string]any{"role": "user", "content": content})
 		pendingImages = nil
 	}
 	for _, msg := range messages {

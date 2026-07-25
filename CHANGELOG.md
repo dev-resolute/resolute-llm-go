@@ -12,7 +12,8 @@
   universally-supported google-shared layout; the Gemini-3 nested multimodal
   functionResponse is a recorded follow-up). The OpenAI-compatible adapter sends
   `image_url` data URLs and batches images from consecutive tool results into one
-  trailing user message; empty tool-result text becomes `"(see attached image)"`
+  trailing user message led by an `"Attached image(s) from tool result:"` text
+  part (upstream parity); empty tool-result text becomes `"(see attached image)"`
   when images are attached, else `"(no tool output)"` (upstream three-way
   placeholder parity). No capability gating — per ADR-0008 apps own model choice.
 
