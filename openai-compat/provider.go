@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -240,6 +241,17 @@ func (p *Provider) acceptsReasoningEffort(model string) bool {
 	return p.classify(model).reasoningEffort
 }
 
+// imageURLPart renders an ImageContent as an OpenAI image_url content part
+// with an inline data URL.
+func imageURLPart(img llm.ImageContent) map[string]any {
+	return map[string]any{
+		"type": "image_url",
+		"image_url": map[string]any{
+			"url": "data:" + img.MimeType + ";base64," + base64.StdEncoding.EncodeToString(img.Data),
+		},
+	}
+}
+
 func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 	ids := newToolCallIDUniquifier()
 	var out []map[string]any
@@ -271,6 +283,11 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 			}
 		case llm.ThinkingContent:
 			m = map[string]any{"role": msg.Role, "content": c.Text}
+		case llm.ImageContent:
+			m = map[string]any{
+				"role":    msg.Role,
+				"content": []map[string]any{imageURLPart(c)},
+			}
 		default:
 			m = map[string]any{"role": msg.Role, "content": ""}
 		}
