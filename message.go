@@ -40,11 +40,27 @@ type ToolResultContent struct {
 	CallID   string
 	ToolName string
 	Content  string
-	Data     json.RawMessage
-	IsError  bool
+	// Images carries optional image parts of the tool result (e.g. the
+	// read tool returning a screenshot). Nil for text-only results.
+	Images  []ImageContent
+	Data    json.RawMessage
+	IsError bool
 }
 
 func (ToolResultContent) isContent() {}
+
+// ImageContent carries an inline image. Data is raw bytes; adapters
+// base64-encode on the wire. encoding/json marshals []byte as base64, so
+// JSON transcripts store compactly for free. Valid in user messages
+// (attachments) and on ToolResultContent.Images. A user turn with text and
+// an image is two adjacent user messages; no multi-content message shape
+// exists.
+type ImageContent struct {
+	Data     []byte
+	MimeType string // image/jpeg, image/png, image/gif, image/webp
+}
+
+func (ImageContent) isContent() {}
 
 // ThinkingContent carries reasoning/thinking content from the LLM.
 type ThinkingContent struct {
