@@ -89,6 +89,36 @@ func TestToOpenAIMessagesEmptyToolResultPlaceholder(t *testing.T) {
 	}
 }
 
+// TestToOpenAIMessagesEmptyToolResultWithImagePlaceholder pins the three-way
+// placeholder branch: empty tool text WITH images uses "(see attached
+// image)", not "(no tool output)" (upstream openai-completions.ts:1201:
+// `hasText ? textResult : hasImages ? "(see attached image)" : "(no tool
+// output)"`), and the image is still hoisted into a trailing user message.
+func TestToOpenAIMessagesEmptyToolResultWithImagePlaceholder(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "tool", Content: llm.ToolResultContent{CallID: "tool-1", ToolName: "read", Content: "",
+			Images: []llm.ImageContent{{Data: []byte("fake"), MimeType: "image/png"}}}},
+	}
+	out := toOpenAIMessages(msgs, Compat{})
+	var roles []string
+	for _, m := range out {
+		roles = append(roles, m["role"].(string))
+	}
+	if len(roles) != 2 || roles[0] != "tool" || roles[1] != "user" {
+		t.Fatalf("roles = %v, want [tool user]", roles)
+	}
+	if out[0]["content"] != "(see attached image)" {
+		t.Errorf("tool content = %v, want (see attached image)", out[0]["content"])
+	}
+	parts, ok := out[1]["content"].([]map[string]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("hoisted content = %#v, want one-part array", out[1]["content"])
+	}
+	if parts[0]["type"] != "image_url" {
+		t.Errorf("part type = %v, want image_url", parts[0]["type"])
+	}
+}
+
 // TestStreamWireToolResultImageBatching pins the end-to-end wire shape: a
 // tool-result transcript carrying an image reaches the HTTP body as a
 // trailing user message whose content array holds an image_url part.

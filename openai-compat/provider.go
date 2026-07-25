@@ -289,10 +289,17 @@ func toOpenAIMessages(messages []llm.Message, compat Compat) []map[string]any {
 		case llm.ToolResultContent:
 			// Empty tool text becomes a placeholder; images from a run of
 			// consecutive tool results are hoisted and batched into one
-			// trailing user message (upstream 0.82.0 behaviour).
+			// trailing user message (upstream 0.82.0 behaviour). The
+			// placeholder is three-way: upstream openai-completions.ts
+			// (`toolResultText = hasText ? textResult : hasImages ?
+			// "(see attached image)" : "(no tool output)"`).
 			text := c.Content
 			if text == "" {
-				text = "(no tool output)"
+				if len(c.Images) > 0 {
+					text = "(see attached image)"
+				} else {
+					text = "(no tool output)"
+				}
 			}
 			m = map[string]any{
 				"role":         "tool",
