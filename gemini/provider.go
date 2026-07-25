@@ -345,6 +345,11 @@ func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content)
 				name = c.CallID
 			}
 			contents = append(contents, genai.NewContentFromFunctionResponse(name, map[string]any{"result": c.Content}, role))
+		case llm.ImageContent:
+			contents = append(contents, &genai.Content{
+				Role:  string(role),
+				Parts: []*genai.Part{{InlineData: &genai.Blob{MIMEType: c.MimeType, Data: c.Data}}},
+			})
 		case llm.ThinkingContent:
 			contents = append(contents, genai.NewContentFromText(c.Text, role))
 		}
