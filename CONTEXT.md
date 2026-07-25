@@ -44,6 +44,8 @@
 
 **Content**: Sealed interface with variants `TextContent`, `ToolCallContent`, `ToolResultContent`, `ThinkingContent`.
 
+**ImageContent**: Sealed content type carrying raw image bytes and MIME type. Valid as part of a user message (a text + image turn is two adjacent user messages) and on the new `ToolResultContent.Images` field. Gemini sends images as `inlineData` parts; tool-result images appear as a trailing `"Tool result image:"` user turn with empty text (upstream's universally-supported google-shared layout). The OpenAI-compatible adapter sends `image_url` with data URLs and batches consecutive tool-result images into one trailing user message, prefixing with `"(see attached image)"` when tool-result text is empty and images are attached (three-way placeholder: text kept when non-empty, `"(see attached image)"` when empty with images, `"(no tool output)"` when empty without).
+
 **ToolDef**: LLM-visible tool spec. `Name`, `Description`, `Schema json.RawMessage`.
 
 ### Thinking and capabilities

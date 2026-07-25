@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0] - 2026-07-25
+
+### Added
+
+- **`ImageContent` (AGENT-18 R1, upstream 0.82.0 read-tool support).** New sealed
+  content type carrying raw image bytes + MIME type; valid as a user message
+  (a text+image turn is two adjacent user messages) and on the new additive
+  `ToolResultContent.Images`. Gemini sends `inlineData` parts, with tool-result
+  images as a trailing `"Tool result image:"` user turn (upstream's
+  universally-supported google-shared layout; the Gemini-3 nested multimodal
+  functionResponse is a recorded follow-up). The OpenAI-compatible adapter sends
+  `image_url` data URLs and batches images from consecutive tool results into one
+  trailing user message; empty tool-result text becomes `"(see attached image)"`
+  when images are attached, else `"(no tool output)"` (upstream three-way
+  placeholder parity). No capability gating — per ADR-0008 apps own model choice.
+
 ## [0.8.2] - 2026-07-21
 
 ### Fixed
