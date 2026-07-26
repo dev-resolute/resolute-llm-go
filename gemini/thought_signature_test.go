@@ -36,7 +36,7 @@ func TestToGeminiContentsReplaysThoughtSignature(t *testing.T) {
 	}
 
 	// when the history is converted back to genai contents
-	contents, _ := toGeminiContents(messages)
+	contents, _ := toGeminiContents(messages, "")
 
 	// then the function-call part echoes the signature verbatim
 	part := findFunctionCallPart(t, contents)
@@ -56,7 +56,7 @@ func TestToGeminiContentsOmitsAbsentThoughtSignature(t *testing.T) {
 	}
 
 	// when the history is converted back to genai contents
-	contents, _ := toGeminiContents(messages)
+	contents, _ := toGeminiContents(messages, "")
 
 	// then the function-call part carries no fabricated signature
 	part := findFunctionCallPart(t, contents)

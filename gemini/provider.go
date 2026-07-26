@@ -230,7 +230,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	// exposes them; otherwise headers are a no-op for Gemini.
 	_ = headers
 
-	contents, sysInstr := toGeminiContents(req.Messages)
+	contents, sysInstr := toGeminiContents(req.Messages, req.Model)
 	config := toGeminiConfig(req, sysInstr)
 
 	var resultMessages []llm.Message
@@ -342,7 +342,7 @@ func mapGeminiFinishReason(reason genai.FinishReason, sawToolCalls bool) llm.Sto
 	}
 }
 
-func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content) {
+func toGeminiContents(messages []llm.Message, model string) ([]*genai.Content, *genai.Content) {
 	var contents []*genai.Content
 	var systemInstruction *genai.Content
 	for _, msg := range messages {
@@ -373,8 +373,33 @@ func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content)
 			if result == "" && len(c.Images) > 0 {
 				result = "(see attached image)"
 			}
-			contents = append(contents, genai.NewContentFromFunctionResponse(name, map[string]any{"result": result}, role))
-			if len(c.Images) > 0 {
+			// Use "output" for success and "error" for errors, per the SDK
+			// documentation and upstream google-shared.ts.
+			response := map[string]any{"output": result}
+			if c.IsError {
+				response = map[string]any{"error": result}
+			}
+			fr := &genai.FunctionResponse{Name: name, Response: response}
+			nestImages := supportsMultimodalFunctionResponse(model)
+			if len(c.Images) > 0 && nestImages {
+				for _, img := range c.Images {
+					fr.Parts = append(fr.Parts, &genai.FunctionResponsePart{
+						InlineData: &genai.FunctionResponseBlob{MIMEType: img.MimeType, Data: img.Data},
+					})
+				}
+			}
+			frPart := &genai.Part{FunctionResponse: fr}
+			// Consecutive tool results share one user turn (upstream merges so
+			// Cloud Code Assist-style backends see a single functionResponse turn).
+			if last := lastContent(contents); last != nil && last.Role == "user" && hasFunctionResponse(last) {
+				last.Parts = append(last.Parts, frPart)
+			} else {
+				contents = append(contents, &genai.Content{Role: "user", Parts: []*genai.Part{frPart}})
+			}
+			// Pre-Gemini-3 models don't support multimodal function responses:
+			// images go in a separate user turn (which ends the merge run, as
+			// upstream's does).
+			if len(c.Images) > 0 && !nestImages {
 				parts := []*genai.Part{{Text: "Tool result image:"}}
 				for _, img := range c.Images {
 					parts = append(parts, &genai.Part{InlineData: &genai.Blob{MIMEType: img.MimeType, Data: img.Data}})
@@ -391,6 +416,33 @@ func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content)
 		}
 	}
 	return contents, systemInstruction
+}
+
+// supportsMultimodalFunctionResponse reports whether the model accepts images
+// nested inside functionResponse.parts (Gemini 3+ / Gemma 4; upstream
+// google-shared.ts gates on Gemini major version >= 3).
+func supportsMultimodalFunctionResponse(model string) bool {
+	switch classifyGemini(model) {
+	case class25, classLegacy:
+		return false
+	}
+	return true
+}
+
+func lastContent(contents []*genai.Content) *genai.Content {
+	if len(contents) == 0 {
+		return nil
+	}
+	return contents[len(contents)-1]
+}
+
+func hasFunctionResponse(c *genai.Content) bool {
+	for _, p := range c.Parts {
+		if p.FunctionResponse != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) *genai.GenerateContentConfig {
