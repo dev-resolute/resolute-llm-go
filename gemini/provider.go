@@ -236,6 +236,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	var resultMessages []llm.Message
 	var pendingToolCalls []llm.ToolCallContent
 	emittedToolCalls := map[string]bool{}
+	var finishReason genai.FinishReason
 
 	// flushToolCalls ends every accumulated tool call and moves it into the
 	// result messages. Tool-call parts and the finish reason can arrive in
@@ -243,7 +244,12 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	// on finish (or at stream end as a fallback).
 	flushToolCalls := func() error {
 		for _, call := range pendingToolCalls {
-			if err := emit(llm.ToolCallEndEvent{CallID: call.CallID}); err != nil {
+			if err := emit(llm.ToolCallEndEvent{
+				CallID:           call.CallID,
+				ToolName:         call.ToolName,
+				Args:             call.Args,
+				ThoughtSignature: call.ThoughtSignature,
+			}); err != nil {
 				return err
 			}
 			resultMessages = append(resultMessages, llm.Message{Role: "assistant", Content: call})
@@ -300,6 +306,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 				}
 			}
 			if cand.FinishReason != "" {
+				finishReason = cand.FinishReason
 				if err := flushToolCalls(); err != nil {
 					return nil, err
 				}
@@ -312,11 +319,27 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 		return nil, err
 	}
 
-	if err := emit(llm.MessageEndEvent{}); err != nil {
+	if err := emit(llm.MessageEndEvent{StopReason: mapGeminiFinishReason(finishReason, len(emittedToolCalls) > 0)}); err != nil {
 		return nil, err
 	}
 
 	return resultMessages, nil
+}
+
+// mapGeminiFinishReason maps a Gemini candidate finish reason to the portable
+// StopReason. Length wins over tool use: a MAX_TOKENS-truncated message's
+// calls may be incomplete (upstream #6285).
+func mapGeminiFinishReason(reason genai.FinishReason, sawToolCalls bool) llm.StopReason {
+	switch {
+	case reason == genai.FinishReasonMaxTokens:
+		return llm.StopReasonLength
+	case sawToolCalls:
+		return llm.StopReasonToolUse
+	case reason == genai.FinishReasonStop:
+		return llm.StopReasonStop
+	default:
+		return llm.StopReasonUnknown
+	}
 }
 
 func toGeminiContents(messages []llm.Message) ([]*genai.Content, *genai.Content) {
