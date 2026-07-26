@@ -145,7 +145,7 @@ func thinkingLevelFor(level llm.ThinkingLevel) genai.ThinkingLevel {
 		return genai.ThinkingLevelLow
 	case llm.ThinkingMedium:
 		return genai.ThinkingLevelMedium
-	case llm.ThinkingHigh:
+	case llm.ThinkingHigh, llm.ThinkingXhigh, llm.ThinkingMax:
 		return genai.ThinkingLevelHigh
 	default:
 		return genai.ThinkingLevelMinimal
@@ -171,6 +171,8 @@ func thinkingConfigFor(req llm.LLMRequest) *genai.ThinkingConfig {
 		llm.ThinkingLow:     1000,
 		llm.ThinkingMedium:  4000,
 		llm.ThinkingHigh:    16000,
+		llm.ThinkingXhigh:   16000,
+		llm.ThinkingMax:     16000,
 	}[req.Thinking]
 	if b, ok := req.ThinkingBudgets[req.Thinking]; ok {
 		budget = b
