@@ -147,6 +147,97 @@ func TestProviderStreamToolCall(t *testing.T) {
 	}
 }
 
+func TestProviderStreamMultipleToolCallsPreserveOrder(t *testing.T) {
+	// Regression test: readSSE used to flush buffered tool calls by ranging
+	// over a map, which randomizes emission order for multi-call turns.
+	// Upstream preserves content order (calls appear in the order the model
+	// emitted them), and downstream (agent-core) now derives execution order
+	// from ToolCallEndEvent, so this must be deterministic.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"name":"a"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_2","function":{"name":"b"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_3","function":{"name":"c"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"arguments":"{\"x\":1}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_2","function":{"arguments":"{\"y\":2}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_3","function":{"arguments":"{\"z\":3}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintln(w, "data: [DONE]")
+	}))
+	defer ts.Close()
+
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req := llm.LLMRequest{
+		Model: "test-model",
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "calc"}},
+		},
+	}
+
+	stream := p.Stream(context.Background(), req)
+	var got []llm.LLMEvent
+	for ev := range stream.Events {
+		got = append(got, ev)
+	}
+	result := <-stream.Done
+
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+
+	wantOrder := []struct {
+		callID   string
+		toolName string
+		args     string
+	}{
+		{"call_1", "a", `{"x":1}`},
+		{"call_2", "b", `{"y":2}`},
+		{"call_3", "c", `{"z":3}`},
+	}
+
+	var ends []llm.ToolCallEndEvent
+	for _, ev := range got {
+		if e, ok := ev.(llm.ToolCallEndEvent); ok {
+			ends = append(ends, e)
+		}
+	}
+	if len(ends) != len(wantOrder) {
+		t.Fatalf("expected %d ToolCallEndEvents, got %d: %+v", len(wantOrder), len(ends), ends)
+	}
+	for i, want := range wantOrder {
+		if ends[i].CallID != want.callID || ends[i].ToolName != want.toolName || string(ends[i].Args) != want.args {
+			t.Errorf("ToolCallEndEvent[%d] = %+v, want CallID=%s ToolName=%s Args=%s", i, ends[i], want.callID, want.toolName, want.args)
+		}
+	}
+
+	var toolCallMsgs []llm.ToolCallContent
+	for _, msg := range result.Messages {
+		if tc, ok := msg.Content.(llm.ToolCallContent); ok {
+			toolCallMsgs = append(toolCallMsgs, tc)
+		}
+	}
+	if len(toolCallMsgs) != len(wantOrder) {
+		t.Fatalf("expected %d tool-call messages, got %d: %+v", len(wantOrder), len(toolCallMsgs), toolCallMsgs)
+	}
+	for i, want := range wantOrder {
+		if toolCallMsgs[i].CallID != want.callID || toolCallMsgs[i].ToolName != want.toolName || string(toolCallMsgs[i].Args) != want.args {
+			t.Errorf("Messages tool-call[%d] = %+v, want CallID=%s ToolName=%s Args=%s", i, toolCallMsgs[i], want.callID, want.toolName, want.args)
+		}
+	}
+}
+
 func TestProviderStreamToolCallTruncatedByLength(t *testing.T) {
 	// finish_reason "length" mid tool call: the buffered call must still be
 	// delivered (ToolCallEndEvent with whatever args arrived) and the message
