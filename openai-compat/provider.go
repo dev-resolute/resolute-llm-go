@@ -362,6 +362,8 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 	var resultMessages []llm.Message
 	var assistantText strings.Builder
 	var toolCallBufs map[string]*toolCallBuffer
+	var finishReason string
+	var sawToolCalls bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -412,25 +414,25 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 					buf.args.WriteString(tc.Function.Arguments)
 				}
 			}
-			if choice.FinishReason == "tool_calls" && toolCallBufs != nil {
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
+			if choice.FinishReason != "" && toolCallBufs != nil {
 				for id, buf := range toolCallBufs {
 					var args json.RawMessage
 					if buf.args.Len() > 0 {
 						args = json.RawMessage(buf.args.String())
 					}
-					if err := emit(llm.ToolCallEndEvent{CallID: id}); err != nil {
+					if err := emit(llm.ToolCallEndEvent{CallID: id, ToolName: buf.name, Args: args}); err != nil {
 						return nil, err
 					}
 					resultMessages = append(resultMessages, llm.Message{
-						Role: "assistant",
-						Content: llm.ToolCallContent{
-							CallID:   id,
-							ToolName: buf.name,
-							Args:     args,
-						},
+						Role:    "assistant",
+						Content: llm.ToolCallContent{CallID: id, ToolName: buf.name, Args: args},
 					})
 				}
 				toolCallBufs = nil
+				sawToolCalls = true
 			}
 		}
 	}
@@ -446,11 +448,30 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 		})
 	}
 
-	if err := emit(llm.MessageEndEvent{}); err != nil {
+	if err := emit(llm.MessageEndEvent{StopReason: mapFinishReason(finishReason, sawToolCalls)}); err != nil {
 		return nil, err
 	}
 
 	return resultMessages, nil
+}
+
+// mapFinishReason maps an OpenAI finish_reason to the portable StopReason.
+// Length wins over tool_calls: a truncated message's calls may be incomplete
+// (upstream #6285) and the consumer must be able to tell.
+func mapFinishReason(finishReason string, sawToolCalls bool) llm.StopReason {
+	switch finishReason {
+	case "length":
+		return llm.StopReasonLength
+	case "tool_calls":
+		return llm.StopReasonToolUse
+	case "stop":
+		if sawToolCalls {
+			return llm.StopReasonToolUse
+		}
+		return llm.StopReasonStop
+	default:
+		return llm.StopReasonUnknown
+	}
 }
 
 type toolCallBuffer struct {

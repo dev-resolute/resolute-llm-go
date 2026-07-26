@@ -61,13 +61,34 @@ func (ToolCallStartEvent) isLLMEvent() {}
 // ToolCallEndEvent signals the end of a tool call block.
 type ToolCallEndEvent struct {
 	CallID string
+	// ToolName, Args, and ThoughtSignature carry the finalized call: for
+	// providers that stream arguments incrementally (openai-compat), this
+	// event — not ToolCallStartEvent — is where complete arguments appear.
+	ToolName         string
+	Args             json.RawMessage
+	ThoughtSignature []byte
 }
 
 func (ToolCallEndEvent) isLLMEvent() {}
 
+// StopReason describes why the assistant message ended. Mirrors upstream's
+// StopReason set (types.ts:382) minus error/aborted, which this API signals
+// via LLMErrorEvent / StreamResult.Err.
+type StopReason string
+
+const (
+	StopReasonUnknown StopReason = ""
+	StopReasonStop    StopReason = "stop"
+	StopReasonLength  StopReason = "length"
+	StopReasonToolUse StopReason = "toolUse"
+)
+
 // MessageEndEvent signals the end of the assistant's message.
 // It is always the last non-error event in a successful stream.
-type MessageEndEvent struct{}
+// StopReason is StopReasonUnknown when the provider did not report one.
+type MessageEndEvent struct {
+	StopReason StopReason
+}
 
 func (MessageEndEvent) isLLMEvent() {}
 

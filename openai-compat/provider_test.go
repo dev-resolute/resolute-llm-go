@@ -2,6 +2,7 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -54,13 +55,20 @@ func TestProviderStreamText(t *testing.T) {
 	}
 
 	var text string
+	var msgEnd llm.MessageEndEvent
 	for _, ev := range got {
 		if td, ok := ev.(llm.TextDeltaEvent); ok {
 			text += td.Delta
 		}
+		if e, ok := ev.(llm.MessageEndEvent); ok {
+			msgEnd = e
+		}
 	}
 	if text != "hello world" {
 		t.Fatalf("expected 'hello world', got %q", text)
+	}
+	if msgEnd.StopReason != llm.StopReasonStop {
+		t.Errorf("StopReason = %q, want stop", msgEnd.StopReason)
 	}
 }
 
@@ -119,6 +127,89 @@ func TestProviderStreamToolCall(t *testing.T) {
 	}
 	if !foundEnd {
 		t.Fatal("expected ToolCallEndEvent")
+	}
+
+	var end llm.ToolCallEndEvent
+	var msgEnd llm.MessageEndEvent
+	for _, ev := range got {
+		switch e := ev.(type) {
+		case llm.ToolCallEndEvent:
+			end = e
+		case llm.MessageEndEvent:
+			msgEnd = e
+		}
+	}
+	if end.ToolName != "calc" || string(end.Args) != `{"x":1}` {
+		t.Errorf("ToolCallEndEvent = %+v, want finalized name calc and args {\"x\":1}", end)
+	}
+	if msgEnd.StopReason != llm.StopReasonToolUse {
+		t.Errorf("StopReason = %q, want toolUse", msgEnd.StopReason)
+	}
+}
+
+func TestProviderStreamToolCallTruncatedByLength(t *testing.T) {
+	// finish_reason "length" mid tool call: the buffered call must still be
+	// delivered (ToolCallEndEvent with whatever args arrived) and the message
+	// end must report StopReasonLength so the agent layer can refuse to run it.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"name":"calc"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"arguments":"{\"x\":"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"length"}]}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			flusher.Flush()
+		}
+		fmt.Fprintln(w, "data: [DONE]")
+	}))
+	defer ts.Close()
+
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req := llm.LLMRequest{
+		Model: "test-model",
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "calc"}},
+		},
+	}
+
+	stream := p.Stream(context.Background(), req)
+	var got []llm.LLMEvent
+	for ev := range stream.Events {
+		got = append(got, ev)
+	}
+	result := <-stream.Done
+
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+
+	var ends []llm.ToolCallEndEvent
+	var msgEnd llm.MessageEndEvent
+	for _, ev := range got {
+		switch e := ev.(type) {
+		case llm.ToolCallEndEvent:
+			ends = append(ends, e)
+		case llm.MessageEndEvent:
+			msgEnd = e
+		}
+	}
+	if len(ends) != 1 {
+		t.Fatalf("expected exactly one ToolCallEndEvent, got %d: %+v", len(ends), ends)
+	}
+	want := llm.ToolCallEndEvent{CallID: "call_1", ToolName: "calc", Args: json.RawMessage(`{"x":`)}
+	if ends[0].CallID != want.CallID || ends[0].ToolName != want.ToolName || string(ends[0].Args) != string(want.Args) {
+		t.Errorf("ToolCallEndEvent = %+v, want %+v", ends[0], want)
+	}
+	if msgEnd.StopReason != llm.StopReasonLength {
+		t.Errorf("StopReason = %q, want length", msgEnd.StopReason)
 	}
 }
 
