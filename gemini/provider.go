@@ -130,6 +130,18 @@ func (c geminiClass) usesThinkingLevel() bool {
 	return c == class3Pro || c == class3Flash || c == classGemma4
 }
 
+// strictToolSamplingSupported reports whether the model enforces required
+// function parameters in validated tool-calling mode (Gemini 3+; upstream
+// google-shared.ts supportsGoogleStrictToolSampling — Gemma is excluded,
+// its ids don't match upstream's ^gemini- gate).
+func strictToolSamplingSupported(model string) bool {
+	switch classifyGemini(model) {
+	case class3Pro, class3Flash:
+		return true
+	}
+	return false
+}
+
 // disabledThinkingLevel is the lowest level used when thinking is "off" for models
 // that cannot fully disable it (Gemini 3): pro clamps to LOW, flash/Gemma to MINIMAL.
 func (c geminiClass) disabledThinkingLevel() genai.ThinkingLevel {
@@ -231,7 +243,13 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	_ = headers
 
 	contents, sysInstr := toGeminiContents(req.Messages, req.Model)
-	config := toGeminiConfig(req, sysInstr)
+	config, err := toGeminiConfig(req, sysInstr)
+	if err != nil {
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: false}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, err
+	}
 
 	var resultMessages []llm.Message
 	var pendingToolCalls []llm.ToolCallContent
@@ -445,13 +463,28 @@ func hasFunctionResponse(c *genai.Content) bool {
 	return false
 }
 
-func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) *genai.GenerateContentConfig {
+// toGeminiConfig builds the genai request config for req. An error return
+// means a tool requested "require" strict sampling on a model that doesn't
+// support validated function calling, or carries an invalid Strict value
+// (llm.ResolveStrictSampling); the error is pre-wrapped in llm.ErrProviderFatal
+// (LLM-11 shape) since it is deterministic and will fail identically on retry —
+// the caller must treat it as a fatal pre-flight error.
+func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) (*genai.GenerateContentConfig, error) {
 	config := &genai.GenerateContentConfig{}
 	if sysInstr != nil {
 		config.SystemInstruction = sysInstr
 	}
 	if len(req.Tools) > 0 {
+		supported := strictToolSamplingSupported(req.Model)
+		var anyStrict bool
 		for _, tool := range req.Tools {
+			strict, err := llm.ResolveStrictSampling(tool, supported)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", llm.ErrProviderFatal, err)
+			}
+			if strict {
+				anyStrict = true
+			}
 			config.Tools = append(config.Tools, &genai.Tool{
 				FunctionDeclarations: []*genai.FunctionDeclaration{
 					{
@@ -462,6 +495,17 @@ func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) *genai.Generate
 				},
 			})
 		}
+		// VALIDATED is request-level (upstream google-shared.ts:311-324), not
+		// per-tool: any tool resolving strict turns it on for the whole call.
+		// Our adapter exposes no toolChoice, so upstream's toolChoice interplay
+		// is N/A here.
+		if anyStrict {
+			config.ToolConfig = &genai.ToolConfig{
+				FunctionCallingConfig: &genai.FunctionCallingConfig{
+					Mode: genai.FunctionCallingConfigModeValidated,
+				},
+			}
+		}
 	}
 	if req.Thinking != llm.ThinkingOff {
 		config.ThinkingConfig = thinkingConfigFor(req)
@@ -471,7 +515,7 @@ func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) *genai.Generate
 			IncludeThoughts: false,
 		}
 	}
-	return config
+	return config, nil
 }
 
 func toGeminiSchema(schema json.RawMessage) *genai.Schema {

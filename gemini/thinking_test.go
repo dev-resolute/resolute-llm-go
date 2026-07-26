@@ -14,7 +14,10 @@ func thinkingBudget(t *testing.T, thinking llm.ThinkingLevel) (int32, bool) {
 
 func budgetFor(t *testing.T, req llm.LLMRequest) (int32, bool) {
 	t.Helper()
-	config := toGeminiConfig(req, nil)
+	config, err := toGeminiConfig(req, nil)
+	if err != nil {
+		t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+	}
 	if config.ThinkingConfig == nil || config.ThinkingConfig.ThinkingBudget == nil {
 		return 0, false
 	}
