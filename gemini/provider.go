@@ -133,7 +133,10 @@ func (c geminiClass) usesThinkingLevel() bool {
 // strictToolSamplingSupported reports whether the model enforces required
 // function parameters in validated tool-calling mode (Gemini 3+; upstream
 // google-shared.ts supportsGoogleStrictToolSampling — Gemma is excluded,
-// its ids don't match upstream's ^gemini- gate).
+// its ids don't match upstream's ^gemini- gate). Deliberate deviation: our
+// class-derived gate treats gemini-flash-latest and gemini-flash-lite-latest
+// as strict-capable (they resolve to Gemini 3 today); future gemini-4-* will
+// need a classifier update to remain strict-capable.
 func strictToolSamplingSupported(model string) bool {
 	switch classifyGemini(model) {
 	case class3Pro, class3Flash:

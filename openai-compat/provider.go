@@ -124,7 +124,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 		// instance, or an invalid Strict value — or malformed tool.Schema
 		// rejected by json.Marshal): it will fail identically on every retry,
 		// so it is fatal and issued before any HTTP request.
-		fatalErr := fmt.Errorf("%w: %w", llm.ErrProviderFatal, err)
+		fatalErr := fmt.Errorf("%w: openai-compat: building request: %w", llm.ErrProviderFatal, err)
 		if emitErr := emit(llm.LLMErrorEvent{Error: fatalErr, Transient: false}); emitErr != nil {
 			return nil, emitErr
 		}
