@@ -362,6 +362,7 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 	var resultMessages []llm.Message
 	var assistantText strings.Builder
 	var toolCallBufs map[string]*toolCallBuffer
+	var toolCallOrder []string
 	var finishReason string
 	var sawToolCalls bool
 
@@ -400,6 +401,7 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 				if !ok {
 					buf = &toolCallBuffer{id: tc.ID, name: tc.Function.Name}
 					toolCallBufs[tc.ID] = buf
+					toolCallOrder = append(toolCallOrder, tc.ID)
 					if tc.Function.Name != "" {
 						if err := emit(llm.ToolCallStartEvent{
 							CallID:   tc.ID,
@@ -418,7 +420,8 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 				finishReason = choice.FinishReason
 			}
 			if choice.FinishReason != "" && toolCallBufs != nil {
-				for id, buf := range toolCallBufs {
+				for _, id := range toolCallOrder {
+					buf := toolCallBufs[id]
 					var args json.RawMessage
 					if buf.args.Len() > 0 {
 						args = json.RawMessage(buf.args.String())
@@ -432,6 +435,7 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 					})
 				}
 				toolCallBufs = nil
+				toolCallOrder = nil
 				sawToolCalls = true
 			}
 		}

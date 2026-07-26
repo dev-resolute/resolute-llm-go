@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.1] - 2026-07-26
+
+### Fixed
+
+- **openai-compat tool-call flush order is now deterministic.** `readSSE` flushed buffered tool
+  calls by ranging over the `toolCallBufs` map, so for an assistant message with multiple tool
+  calls, the emitted `ToolCallEndEvent` order — and `StreamResult.Messages` order — was
+  nondeterministic run-to-run (Go randomizes map iteration order). A new `toolCallOrder` slice
+  records first-appearance order as each call ID is buffered, and the flush now iterates that
+  slice (looking up the map) instead of ranging the map directly, so calls are always emitted in
+  the order the model streamed them — matching upstream content order and the execution order
+  agent-core now derives from these events.
+
 ## [0.10.0] - 2026-07-25
 
 > **Live validation:** `TestLiveGeminiThinkingSurfaces_2_5_Flash`,
