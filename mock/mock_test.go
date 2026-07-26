@@ -37,8 +37,12 @@ func TestMockProviderExactMatch(t *testing.T) {
 	if _, ok := got[0].(llm.TextDeltaEvent); !ok {
 		t.Fatalf("expected TextDeltaEvent, got %T", got[0])
 	}
-	if _, ok := got[1].(llm.MessageEndEvent); !ok {
+	end, ok := got[1].(llm.MessageEndEvent)
+	if !ok {
 		t.Fatalf("expected MessageEndEvent, got %T", got[1])
+	}
+	if end.StopReason != llm.StopReasonStop {
+		t.Errorf("StopReason = %q, want %q", end.StopReason, llm.StopReasonStop)
 	}
 }
 
@@ -112,11 +116,57 @@ func TestMockProviderToolCallResponse(t *testing.T) {
 	if _, ok := got[0].(llm.ToolCallStartEvent); !ok {
 		t.Fatalf("expected ToolCallStartEvent, got %T", got[0])
 	}
-	if _, ok := got[1].(llm.ToolCallEndEvent); !ok {
+	callEnd, ok := got[1].(llm.ToolCallEndEvent)
+	if !ok {
 		t.Fatalf("expected ToolCallEndEvent, got %T", got[1])
 	}
-	if _, ok := got[2].(llm.MessageEndEvent); !ok {
+	if callEnd.ToolName != "calc" {
+		t.Errorf("ToolCallEndEvent.ToolName = %q, want %q", callEnd.ToolName, "calc")
+	}
+	if string(callEnd.Args) != `{"x":1}` {
+		t.Errorf("ToolCallEndEvent.Args = %s, want %s", callEnd.Args, `{"x":1}`)
+	}
+	end, ok := got[2].(llm.MessageEndEvent)
+	if !ok {
 		t.Fatalf("expected MessageEndEvent, got %T", got[2])
+	}
+	if end.StopReason != llm.StopReasonToolUse {
+		t.Errorf("StopReason = %q, want %q", end.StopReason, llm.StopReasonToolUse)
+	}
+}
+
+func TestMockProviderRespondThinkingStopReason(t *testing.T) {
+	m := New("mock")
+	m.OnPrompt(Exact("think")).RespondThinking("pondering...").Add()
+
+	req := llm.LLMRequest{
+		Messages: []llm.Message{
+			{Role: "user", Content: llm.TextContent{Text: "think"}},
+		},
+	}
+
+	stream := m.Stream(context.Background(), req)
+	var got []llm.LLMEvent
+	for ev := range stream.Events {
+		got = append(got, ev)
+	}
+	result := <-stream.Done
+
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(got))
+	}
+	if _, ok := got[0].(llm.ThinkingDeltaEvent); !ok {
+		t.Fatalf("expected ThinkingDeltaEvent, got %T", got[0])
+	}
+	end, ok := got[1].(llm.MessageEndEvent)
+	if !ok {
+		t.Fatalf("expected MessageEndEvent, got %T", got[1])
+	}
+	if end.StopReason != llm.StopReasonStop {
+		t.Errorf("StopReason = %q, want %q", end.StopReason, llm.StopReasonStop)
 	}
 }
 
