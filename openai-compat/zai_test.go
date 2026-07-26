@@ -58,7 +58,7 @@ func TestZAIThinkingDialect(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given a z.ai/GLM provider (shares DeepSeek's thinking:{type} wire)
-			body := captureClassifiedBody(t, Compat{ThinkingFormat: ThinkingDeepSeek}, classifyZAI, llm.LLMRequest{
+			body := captureClassifiedBody(t, Config{Compat: Compat{ThinkingFormat: ThinkingDeepSeek}}, classifyZAI, llm.LLMRequest{
 				Model:    "glm-4.6",
 				Thinking: tt.thinking,
 				Messages: []llm.Message{{Role: "user", Content: llm.TextContent{Text: "hi"}}},

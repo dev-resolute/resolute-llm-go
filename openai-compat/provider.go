@@ -119,10 +119,11 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 
 	body, err := p.toRequestBody(req)
 	if err != nil {
-		// The only error toRequestBody can produce today is a strict-sampling
-		// resolution failure (require on an unsupported instance, or an invalid
-		// Strict value) — a deterministic config error that will fail identically
-		// on every retry, so it is fatal and issued before any HTTP request.
+		// Every error toRequestBody can produce today is deterministic (a
+		// strict-sampling resolution failure — require on an unsupported
+		// instance, or an invalid Strict value — or malformed tool.Schema
+		// rejected by json.Marshal): it will fail identically on every retry,
+		// so it is fatal and issued before any HTTP request.
 		fatalErr := fmt.Errorf("%w: %w", llm.ErrProviderFatal, err)
 		if emitErr := emit(llm.LLMErrorEvent{Error: fatalErr, Transient: false}); emitErr != nil {
 			return nil, emitErr
