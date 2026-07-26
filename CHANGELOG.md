@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.11.0] - 2026-07-26
+
+> **Live validation:** `TestLiveGeminiStrictPreferToolRoundTrip` passes against the live
+> `gemini-3.1-pro-preview` API.
+
+### Added
+
+- **`ToolDef.ConstrainedSampling` — strict JSON-schema tool sampling (LLM-12, upstream
+  0.82.0 `constrained-sampling.ts`).** A tool opts in with
+  `ConstrainedSampling: &llm.ConstrainedSampling{Strict: llm.StrictPrefer}` or
+  `llm.StrictRequire`; nil (the default) is unchanged, off behaviour. The new
+  `llm.ResolveStrictSampling(tool, supported)` is the single resolver both adapters call:
+  `prefer` uses strict sampling when the provider/model supports it and **silently falls
+  back** (no error, no field) when it doesn't; `require` **fails fatally** when unsupported,
+  with the exact message `Tool "<name>" requires JSON-schema constrained sampling, but
+  strict tools are unsupported.`, wrapped in `llm.ErrProviderFatal` so retry ladders settle
+  on the first attempt instead of retrying a config error that will never succeed (LLM-11
+  polarity). A non-nil `ConstrainedSampling` whose `Strict` is anything other than
+  `prefer`/`require` (including the zero value `""`) is also a loud resolver error, naming
+  the offending tool.
+- **openai-compat strict tool-call emission, per-instance gated (LLM-12).** New
+  `Config.SupportsStrictTools *bool`: nil defers to the classifier default, which is
+  **true** for a plain instance (no classifier) and every current named family (xAI,
+  Mistral, Qwen, z.ai) — mirroring upstream, where only moonshot/together/cloudflare-gateway/
+  nvidia are denylisted, none of which are shipped families today; a non-nil pointer
+  (including one pointing at `false`) always overrides the classifier, in either direction.
+  When the resolved instance supports strict, **every** function tool on the wire carries a
+  `"strict"` key — `true` or `false` per `ResolveStrictSampling`'s per-tool result, even for
+  tools that never opted in. When it doesn't, the `"strict"` key is **omitted entirely**
+  from every tool (some providers reject unrecognized fields with HTTP 400). A `require`
+  tool on an unsupported instance fails before any HTTP request is issued, as a fatal
+  `LLMErrorEvent`/`StreamResult.Err`.
+- **Gemini VALIDATED function-calling mode for strict tools on Gemini 3 (LLM-12).** Support
+  is version-derived, not configured: `classifyGemini(model) ∈ {class3Pro, class3Flash}` →
+  supported; Gemini 2.5, legacy Gemini, and **Gemma 4** (upstream's `^gemini-` gate never
+  matches Gemma ids) → unsupported. When any tool on the request resolves strict, the
+  provider sets `ToolConfig.FunctionCallingConfig.Mode = VALIDATED` for the **whole request**
+  (upstream `google-shared.ts:311-324` — the mode is request-level, not per-tool); with no
+  strict-resolved tool, `ToolConfig` stays nil. `prefer` on a model below Gemini 3 falls back
+  silently (no `ToolConfig`, no error); `require` on a model below Gemini 3 fails fatally
+  before the request is sent, via the same `ResolveStrictSampling` + `llm.ErrProviderFatal`
+  path as openai-compat.
+
+**Grammar-constrained custom tools (`openai_lark`/`openai_regex`, `type:"custom"` tools,
+streaming input re-encoding) are deliberately deferred**, not ported in this release.
+Upstream only ever enables grammar sampling on Responses-API endpoints (GPT-5+ on
+openai/codex/azure/copilot/opencode/cloudflare); no chat-completions model gets it, and
+today's adapters here are Gemini and openai-compat chat-completions — there is no target
+that could use it yet. Tracked as a watch item, triggered by a future Responses-family
+adapter or a named compat instance verified to accept OpenAI custom tools.
+
 ## [0.10.1] - 2026-07-26
 
 ### Fixed
