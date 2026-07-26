@@ -142,6 +142,48 @@ func TestLiveGemini3ToolCallThoughtSignatureRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLiveGeminiStrictPreferToolRoundTrip(t *testing.T) {
+	// given a live Gemini 3 model and a "prefer" strict tool
+	p := liveProvider(t)
+	const model = "gemini-3.1-pro-preview"
+	weather := llm.ToolDef{
+		Name:                "get_weather",
+		Description:         "Get the current weather for a city.",
+		Schema:              []byte(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+		ConstrainedSampling: &llm.ConstrainedSampling{Strict: llm.StrictPrefer},
+	}
+	ask := llm.Message{Role: "user", Content: llm.TextContent{Text: "What is the weather in Paris right now? Use the tool."}}
+
+	// when the model streams against a "prefer" strict tool (VALIDATED
+	// function-calling mode, per LLM-12)
+	stream := p.Stream(context.Background(), llm.LLMRequest{
+		Model:    model,
+		Thinking: llm.ThinkingLow,
+		Tools:    []llm.ToolDef{weather},
+		Messages: []llm.Message{ask},
+	})
+	for range stream.Events {
+	}
+	res := <-stream.Done
+	if res.Err != nil {
+		t.Skipf("%s not available to this key: %v", model, res.Err)
+	}
+
+	// then the tool call arrives in the result messages
+	var call *llm.ToolCallContent
+	for _, m := range res.Messages {
+		if tc, ok := m.Content.(llm.ToolCallContent); ok {
+			call = &tc
+		}
+	}
+	if call == nil {
+		t.Fatal("no ToolCallContent in StreamResult.Messages (strict prefer tool call did not arrive)")
+	}
+	if call.ToolName != weather.Name {
+		t.Errorf("ToolCallContent.ToolName = %q, want %q", call.ToolName, weather.Name)
+	}
+}
+
 func TestLiveGeminiThinkingSurfaces_3_Flash(t *testing.T) {
 	// given a live Gemini 3 model (skips when the key has no access to it)
 	p := liveProvider(t)
