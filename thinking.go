@@ -9,6 +9,8 @@ const (
 	ThinkingLow
 	ThinkingMedium
 	ThinkingHigh
+	ThinkingXhigh
+	ThinkingMax
 )
 
 // ProviderHints is a typed escape hatch for provider-specific config.

@@ -47,6 +47,8 @@ func reasoningEffort(req llm.LLMRequest) string {
 		llm.ThinkingLow:     "low",
 		llm.ThinkingMedium:  "medium",
 		llm.ThinkingHigh:    "high",
+		llm.ThinkingXhigh:   "xhigh",
+		llm.ThinkingMax:     "max",
 	}[req.Thinking]
 	if req.ProviderHints.OpenAI != nil && req.ProviderHints.OpenAI.ReasoningEffort != "" {
 		effort = req.ProviderHints.OpenAI.ReasoningEffort

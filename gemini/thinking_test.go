@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/dev-resolute/resolute-llm-go"
+	"google.golang.org/genai"
 )
 
 func thinkingBudget(t *testing.T, thinking llm.ThinkingLevel) (int32, bool) {
@@ -118,5 +119,20 @@ func TestThinkingLevelBudgetMapping(t *testing.T) {
 				t.Errorf("thinking budget = %d, want %d", budget, tt.want)
 			}
 		})
+	}
+}
+
+func TestThinkingXhighMaxClampToHigh(t *testing.T) {
+	// Upstream clamps xhigh/max to high for token-budget Gemini models
+	// (simple-options.ts clampReasoning) and Gemini 3 has no enum above HIGH.
+	for _, level := range []llm.ThinkingLevel{llm.ThinkingXhigh, llm.ThinkingMax} {
+		cfg := thinkingConfigFor(llm.LLMRequest{Model: "gemini-2.5-flash", Thinking: level})
+		if cfg == nil || cfg.ThinkingBudget == nil || *cfg.ThinkingBudget != 16000 {
+			t.Errorf("budget for %v = %+v, want 16000 (high clamp)", level, cfg)
+		}
+		cfg3 := thinkingConfigFor(llm.LLMRequest{Model: "gemini-3.1-pro-preview", Thinking: level})
+		if cfg3 == nil || cfg3.ThinkingLevel != genai.ThinkingLevelHigh {
+			t.Errorf("gemini-3 level for %v = %+v, want HIGH", level, cfg3)
+		}
 	}
 }

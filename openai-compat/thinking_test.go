@@ -123,3 +123,52 @@ func TestThinkingLevelEffortMapping(t *testing.T) {
 		})
 	}
 }
+
+func TestReasoningEffortXhighMax(t *testing.T) {
+	for _, tt := range []struct {
+		level llm.ThinkingLevel
+		want  string
+	}{
+		{llm.ThinkingXhigh, "xhigh"},
+		{llm.ThinkingMax, "max"},
+	} {
+		got := reasoningEffort(llm.LLMRequest{Thinking: tt.level})
+		if got != tt.want {
+			t.Errorf("reasoningEffort(%v) = %q, want %q", tt.level, got, tt.want)
+		}
+	}
+}
+
+func TestThinkingXhighMaxEndToEnd(t *testing.T) {
+	// Verify that ThinkingMax produces "max" in the JSON request body
+	var body map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		flusher.Flush()
+		fmt.Fprintln(w, "data: [DONE]")
+	}))
+	t.Cleanup(ts.Close)
+
+	p, err := New(Config{Name: "openai-compat", BaseURL: ts.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stream := p.Stream(context.Background(), llm.LLMRequest{Model: "test-model", Thinking: llm.ThinkingMax})
+	for range stream.Events {
+	}
+	if result := <-stream.Done; result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+
+	effort, ok := body["reasoning_effort"].(string)
+	if !ok {
+		t.Fatalf("reasoning_effort absent, want %q", "max")
+	}
+	if effort != "max" {
+		t.Errorf("reasoning_effort = %q, want %q", effort, "max")
+	}
+}

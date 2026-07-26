@@ -284,7 +284,7 @@ type ResponseBuilder struct {
 
 // RespondText appends a text response to the script.
 func (rb *ResponseBuilder) RespondText(text string) *ResponseBuilder {
-	rb.r.events = append(rb.r.events, llm.TextDeltaEvent{Delta: text}, llm.MessageEndEvent{})
+	rb.r.events = append(rb.r.events, llm.TextDeltaEvent{Delta: text}, llm.MessageEndEvent{StopReason: llm.StopReasonStop})
 	rb.r.resultMsgs = append(rb.r.resultMsgs, llm.Message{
 		Role:    "assistant",
 		Content: llm.TextContent{Text: text},
@@ -299,7 +299,11 @@ func (rb *ResponseBuilder) RespondToolCall(name string, args json.RawMessage) *R
 		CallID:   callID,
 		ToolName: name,
 		Args:     args,
-	}, llm.ToolCallEndEvent{CallID: callID}, llm.MessageEndEvent{})
+	}, llm.ToolCallEndEvent{
+		CallID:   callID,
+		ToolName: name,
+		Args:     args,
+	}, llm.MessageEndEvent{StopReason: llm.StopReasonToolUse})
 	rb.r.resultMsgs = append(rb.r.resultMsgs, llm.Message{
 		Role: "assistant",
 		Content: llm.ToolCallContent{
@@ -323,7 +327,11 @@ func (rb *ResponseBuilder) Terminate() *ResponseBuilder {
 
 // RespondThinking appends a thinking response to the script.
 func (rb *ResponseBuilder) RespondThinking(text string) *ResponseBuilder {
-	rb.r.events = append(rb.r.events, llm.ThinkingDeltaEvent{Delta: text}, llm.MessageEndEvent{})
+	// A thinking-only turn with no tool call is a normal completion (both real
+	// providers report their native "stop" finish reason here when no tool
+	// calls occurred, regardless of whether the turn carried visible text),
+	// so StopReasonStop is the faithful reason, not the zero-value Unknown.
+	rb.r.events = append(rb.r.events, llm.ThinkingDeltaEvent{Delta: text}, llm.MessageEndEvent{StopReason: llm.StopReasonStop})
 	rb.r.resultMsgs = append(rb.r.resultMsgs, llm.Message{
 		Role:    "assistant",
 		Content: llm.ThinkingContent{Text: text},

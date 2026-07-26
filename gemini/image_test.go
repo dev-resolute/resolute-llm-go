@@ -13,7 +13,7 @@ func TestToGeminiContentsUserImage(t *testing.T) {
 		{Role: "user", Content: llm.TextContent{Text: "what is in this picture?"}},
 		{Role: "user", Content: llm.ImageContent{Data: []byte{0xff, 0xd8, 0xff, 0xe0}, MimeType: "image/jpeg"}},
 	}
-	contents, _ := toGeminiContents(msgs)
+	contents, _ := toGeminiContents(msgs, "")
 	if len(contents) != 2 {
 		t.Fatalf("contents = %d, want 2 (text turn + image turn)", len(contents))
 	}
@@ -42,7 +42,7 @@ func TestToGeminiContentsToolResultImages(t *testing.T) {
 			},
 		}},
 	}
-	contents, _ := toGeminiContents(msgs)
+	contents, _ := toGeminiContents(msgs, "gemini-2.5-flash")
 	if len(contents) != 2 {
 		t.Fatalf("contents = %d, want 2 (functionResponse + image user turn)", len(contents))
 	}
@@ -50,7 +50,7 @@ func TestToGeminiContentsToolResultImages(t *testing.T) {
 	if fr.Parts[0].FunctionResponse == nil {
 		t.Fatalf("first content is not a functionResponse: %+v", fr.Parts[0])
 	}
-	if got := fr.Parts[0].FunctionResponse.Response["result"]; got != "(see attached image)" {
+	if got := fr.Parts[0].FunctionResponse.Response["output"]; got != "(see attached image)" {
 		t.Errorf("empty-text placeholder = %v, want %q", got, "(see attached image)")
 	}
 	img := contents[1]
@@ -75,9 +75,9 @@ func TestToGeminiContentsToolResultTextWithImagesKeepsText(t *testing.T) {
 			Images: []llm.ImageContent{{Data: []byte{1}, MimeType: "image/png"}},
 		}},
 	}
-	contents, _ := toGeminiContents(msgs)
+	contents, _ := toGeminiContents(msgs, "gemini-2.5-flash")
 	fr := contents[0]
-	if got := fr.Parts[0].FunctionResponse.Response["result"]; got != "Read image file [image/png]" {
-		t.Errorf("result = %v, want the tool text", got)
+	if got := fr.Parts[0].FunctionResponse.Response["output"]; got != "Read image file [image/png]" {
+		t.Errorf("output = %v, want the tool text", got)
 	}
 }
