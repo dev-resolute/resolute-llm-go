@@ -48,4 +48,10 @@ type classification struct {
 	// Some models reason but reject it (xAI grok-4 / Mistral Magistral always-reason),
 	// so this is distinct from thinking and only consulted by the default dialect.
 	reasoningEffort bool
+	// strictTools reports whether this model may receive provider-side "strict"
+	// JSON-schema-enforced tool sampling. Every family we ship defaults to true;
+	// upstream denylists only moonshot/together/cloudflare-gateway/nvidia
+	// (openai-completions.ts:1454), none of which are current named families —
+	// this field is where a future denylisted family would flip the switch off.
+	strictTools bool
 }

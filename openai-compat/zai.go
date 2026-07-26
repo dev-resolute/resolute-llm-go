@@ -27,7 +27,8 @@ var reZAIVision = regexp.MustCompile(`glm-\d(\.\d)?v`)
 func classifyZAI(model string) classification {
 	m := strings.ToLower(model)
 	return classification{
-		thinking: strings.HasPrefix(m, "glm-4.5") || strings.HasPrefix(m, "glm-4.6"),
-		vision:   reZAIVision.MatchString(m),
+		thinking:    strings.HasPrefix(m, "glm-4.5") || strings.HasPrefix(m, "glm-4.6"),
+		vision:      reZAIVision.MatchString(m),
+		strictTools: true,
 	}
 }

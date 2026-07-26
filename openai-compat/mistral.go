@@ -28,5 +28,6 @@ func classifyMistral(model string) classification {
 		thinking:        hybrid || magistral,
 		vision:          hybrid || strings.HasPrefix(m, "magistral-medium") || strings.HasPrefix(m, "pixtral"),
 		reasoningEffort: hybrid,
+		strictTools:     true,
 	}
 }
