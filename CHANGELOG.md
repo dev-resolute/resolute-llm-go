@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.10.0] - 2026-07-25
+
+> **Live validation:** `TestLiveGeminiThinkingSurfaces_2_5_Flash`,
+> `TestLiveGemini3ToolCallThoughtSignatureRoundTrip`, and
+> `TestLiveGeminiThinkingSurfaces_3_Flash` pass against the live Gemini API.
+
+### Added
+
+- **`ThinkingXhigh` and `ThinkingMax` levels (LLM-13, upstream 0.80.6+).** Two new
+  `llm.ThinkingLevel` values above `ThinkingHigh`. The openai-compat adapter passes them straight
+  through as `reasoning_effort: "xhigh"` / `"max"` (models that don't support the extra levels
+  simply see an effort string they ignore or reject same as any unsupported value today). Gemini
+  has no levels above `HIGH`, so both clamp to `genai.ThinkingLevelHigh` with the same 16000-token
+  default budget as `ThinkingHigh` (still overridable via `req.ThinkingBudgets`).
+- **`StopReason` on `MessageEndEvent` (LLM-15).** New `llm.StopReason` string type —
+  `StopReasonStop`, `StopReasonLength`, `StopReasonToolUse`, `StopReasonUnknown` — mirrors
+  upstream's stop-reason set (minus error/aborted, which this API already signals via
+  `LLMErrorEvent`/`StreamResult.Err`). Both providers map their native finish reason onto it, with
+  a length-truncation callout: `length` (openai-compat) / `MAX_TOKENS` (Gemini) wins over tool use,
+  since a truncated message's tool-call arguments may be incomplete (upstream #6285) and callers
+  need to be able to tell.
+- **`ToolCallEndEvent` carries the finalized call (LLM-15).** `ToolName`, `Args`
+  (`json.RawMessage`), and `ThoughtSignature` are new fields on `ToolCallEndEvent` — for providers
+  that stream arguments incrementally, this event (not `ToolCallStartEvent`) is where complete,
+  ready-to-execute arguments appear. Both providers now populate all three on flush.
+
+### Fixed
+
+- **openai-compat streamed tool-call arguments now reach event consumers (LLM-15).** The SSE
+  reader only flushed accumulated tool-call buffers into `ToolCallEndEvent`/`StreamResult.Messages`
+  when `finish_reason == "tool_calls"`; any other terminal reason — notably `"length"` on a
+  truncated response — dropped the buffered arguments entirely, so event-driven callers received
+  no tool call at all (only `StreamResult.Messages`-based callers were unaffected, and even those
+  had no way to know the call was truncated). Flush now happens on any non-empty `finish_reason`,
+  and the emitted `ToolCallEndEvent` carries the finalized `ToolName`/`Args` so a length-truncated
+  call is both delivered and identifiable via the new `StopReason`.
+- **Gemini `functionResponse` wire format changes to `{"output"}`/`{"error"}` (upstream
+  `google-shared.ts` parity — WIRE FORMAT CHANGE).** The response body's key changes from
+  `{"result": ...}` to `{"output": ...}` on success or `{"error": ...}` when
+  `ToolResultContent.IsError` is set (previously `IsError` was silently dropped and everything
+  went under `result`). Any inspection or replay logic keyed on the old `result` field must move
+  to `output`/`error`.
+- **Consecutive Gemini tool results merge into one turn.** Consecutive tool-result messages are
+  now sent as a single `user` turn carrying multiple `functionResponse` parts, instead of one turn
+  per result, matching upstream's Cloud Code Assist-compatible layout.
+- **Gemini ≥ 3 / Gemma 4 nest tool-result images in `functionResponse.parts`.** Per upstream's
+  major-version gate, tool-result images are now nested inside the `functionResponse` part for
+  Gemini 3+ and Gemma 4 models. Gemini 2.5 and legacy models are unaffected and keep the separate
+  trailing `"Tool result image:"` user turn.
+
 ## [0.9.0] - 2026-07-25
 
 ### Added
