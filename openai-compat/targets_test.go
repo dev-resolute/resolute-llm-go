@@ -13,9 +13,11 @@ import (
 )
 
 // captureClassifiedBody runs one stream through a provider wired with the given
-// thinking dialect and family classifier (as the built-in constructors do), and
-// returns the decoded request body so tests can assert the wire shape per model.
-func captureClassifiedBody(t *testing.T, compat Compat, classify func(string) classification, req llm.LLMRequest) map[string]any {
+// config (as the built-in constructors do, plus whatever else a test wants to
+// set — e.g. SupportsStrictTools) and family classifier, and returns the
+// decoded request body so tests can assert the wire shape per model. Name and
+// BaseURL are fixed by this helper; cfg's own Name/BaseURL are ignored.
+func captureClassifiedBody(t *testing.T, cfg Config, classify func(string) classification, req llm.LLMRequest) map[string]any {
 	t.Helper()
 	var captured map[string]any
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +31,9 @@ func captureClassifiedBody(t *testing.T, compat Compat, classify func(string) cl
 	}))
 	t.Cleanup(ts.Close)
 
-	p, err := newProvider(Config{Name: "target", BaseURL: ts.URL, Compat: compat})
+	cfg.Name = "target"
+	cfg.BaseURL = ts.URL
+	p, err := newProvider(cfg)
 	if err != nil {
 		t.Fatalf("newProvider: %v", err)
 	}

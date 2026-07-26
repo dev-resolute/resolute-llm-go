@@ -29,6 +29,13 @@ type Config struct {
 	Retry     llm.RetryPolicy
 	Headers   map[string]string
 	Compat    Compat
+	// SupportsStrictTools overrides whether function tools on this instance may
+	// request provider-side "strict" JSON-schema-enforced sampling. nil means
+	// omitted: the classifier default applies (true for a plain instance and
+	// every current named family — see classification.strictTools). A non-nil
+	// pointer — including one pointing at false — always wins over the
+	// classifier.
+	SupportsStrictTools *bool
 }
 
 // Provider implements llm.LLMProvider for OpenAI-compatible endpoints.
@@ -112,7 +119,16 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 
 	body, err := p.toRequestBody(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai-compat: building request: %w", err)
+		// Every error toRequestBody can produce today is deterministic (a
+		// strict-sampling resolution failure — require on an unsupported
+		// instance, or an invalid Strict value — or malformed tool.Schema
+		// rejected by json.Marshal): it will fail identically on every retry,
+		// so it is fatal and issued before any HTTP request.
+		fatalErr := fmt.Errorf("%w: openai-compat: building request: %w", llm.ErrProviderFatal, err)
+		if emitErr := emit(llm.LLMErrorEvent{Error: fatalErr, Transient: false}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, fatalErr
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(body))
@@ -188,7 +204,11 @@ func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
 		"messages": toOpenAIMessages(req.Messages, p.config.Compat),
 	}
 	if len(req.Tools) > 0 {
-		body["tools"] = toOpenAITools(req.Tools)
+		tools, err := toOpenAITools(req.Tools, p.supportsStrictTools(req.Model))
+		if err != nil {
+			return nil, err
+		}
+		body["tools"] = tools
 	}
 	if req.SessionID != "" {
 		body["prompt_cache_key"] = clampPromptCacheKey(req.SessionID)
@@ -239,6 +259,22 @@ func (p *Provider) acceptsReasoningEffort(model string) bool {
 		return true
 	}
 	return p.classify(model).reasoningEffort
+}
+
+// supportsStrictTools reports whether function tools on this instance/model may
+// request provider-side "strict" JSON-schema-enforced sampling.
+// Config.SupportsStrictTools, when set, always wins; otherwise the classifier
+// default applies — true for a plain instance (no classifier) and every
+// current named family (see classification.strictTools for the future
+// per-family off-switch).
+func (p *Provider) supportsStrictTools(model string) bool {
+	if p.config.SupportsStrictTools != nil {
+		return *p.config.SupportsStrictTools
+	}
+	if p.classify == nil {
+		return true
+	}
+	return p.classify(model).strictTools
 }
 
 // imageURLPart renders an ImageContent as an OpenAI image_url content part
@@ -342,19 +378,35 @@ func ensureReasoningContent(m map[string]any, compat Compat) {
 	}
 }
 
-func toOpenAITools(tools []llm.ToolDef) []map[string]any {
+// toOpenAITools converts tool defs to the OpenAI-compatible wire shape. When
+// strictSupported, every function tool object carries "strict": true when
+// llm.ResolveStrictSampling resolves the tool strict, false otherwise
+// (upstream convertTools parity, openai-completions.ts:1301-1311). When
+// !strictSupported, the "strict" key is omitted entirely from every tool —
+// some providers 400 on unrecognized fields. An error return means a tool
+// requires strict sampling the instance can't honor, or carries an invalid
+// Strict value; the caller must treat this as a fatal pre-flight error.
+func toOpenAITools(tools []llm.ToolDef, strictSupported bool) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, tool := range tools {
+		strict, err := llm.ResolveStrictSampling(tool, strictSupported)
+		if err != nil {
+			return nil, err
+		}
+		fn := map[string]any{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  json.RawMessage(tool.Schema),
+		}
+		if strictSupported {
+			fn["strict"] = strict
+		}
 		out = append(out, map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        tool.Name,
-				"description": tool.Description,
-				"parameters":  json.RawMessage(tool.Schema),
-			},
+			"type":     "function",
+			"function": fn,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(llm.LLMEvent) error) ([]llm.Message, error) {

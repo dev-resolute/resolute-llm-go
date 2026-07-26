@@ -22,7 +22,7 @@ func TestXAIReasoningEffortGatedPerModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given an xAI provider and a request at some thinking level
 			// when the wire request is built
-			body := captureClassifiedBody(t, Compat{}, classifyXAI, llm.LLMRequest{
+			body := captureClassifiedBody(t, Config{}, classifyXAI, llm.LLMRequest{
 				Model:    tt.model,
 				Thinking: tt.thinking,
 				Messages: []llm.Message{{Role: "user", Content: llm.TextContent{Text: "hi"}}},

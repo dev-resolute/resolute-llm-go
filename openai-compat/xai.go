@@ -33,5 +33,6 @@ func classifyXAI(model string) classification {
 		thinking:        grok4 || mini,
 		vision:          grok4 || strings.Contains(m, "vision"),
 		reasoningEffort: mini || reXAIGrok4Minor.MatchString(m),
+		strictTools:     true,
 	}
 }

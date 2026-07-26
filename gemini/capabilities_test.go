@@ -76,7 +76,10 @@ func TestThinkingConfigMechanismByGeneration(t *testing.T) {
 	t.Run("gemini 2.5 uses thinkingBudget, not thinkingLevel", func(t *testing.T) {
 		// given a Gemini 2.5 model with thinking on
 		// when the genai config is built
-		cfg := toGeminiConfig(llm.LLMRequest{Model: "gemini-2.5-flash", Thinking: llm.ThinkingMedium}, nil)
+		cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-2.5-flash", Thinking: llm.ThinkingMedium}, nil)
+		if err != nil {
+			t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+		}
 
 		// then it carries a thinkingBudget, no thinkingLevel, and includes thoughts
 		tc := cfg.ThinkingConfig
@@ -97,7 +100,10 @@ func TestThinkingConfigMechanismByGeneration(t *testing.T) {
 	t.Run("gemini 3 uses thinkingLevel, not thinkingBudget", func(t *testing.T) {
 		// given a Gemini 3 model with thinking on
 		// when the genai config is built
-		cfg := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.5-flash", Thinking: llm.ThinkingHigh}, nil)
+		cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.5-flash", Thinking: llm.ThinkingHigh}, nil)
+		if err != nil {
+			t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+		}
 
 		// then it carries a thinkingLevel enum, no budget, and includes thoughts
 		tc := cfg.ThinkingConfig
@@ -123,7 +129,10 @@ func TestThinkingConfigMechanismByGeneration(t *testing.T) {
 			llm.ThinkingHigh:    genai.ThinkingLevelHigh,
 		}
 		for portable, want := range levels {
-			cfg := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.1-pro", Thinking: portable}, nil)
+			cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.1-pro", Thinking: portable}, nil)
+			if err != nil {
+				t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+			}
 			if cfg.ThinkingConfig == nil || cfg.ThinkingConfig.ThinkingLevel != want {
 				t.Errorf("portable %v → ThinkingLevel %v, want %v", portable, cfg.ThinkingConfig.ThinkingLevel, want)
 			}
@@ -133,7 +142,10 @@ func TestThinkingConfigMechanismByGeneration(t *testing.T) {
 
 func TestThinkingOffByGeneration(t *testing.T) {
 	t.Run("gemini 2.5 off omits ThinkingConfig", func(t *testing.T) {
-		cfg := toGeminiConfig(llm.LLMRequest{Model: "gemini-2.5-flash", Thinking: llm.ThinkingOff}, nil)
+		cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-2.5-flash", Thinking: llm.ThinkingOff}, nil)
+		if err != nil {
+			t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+		}
 		if cfg.ThinkingConfig != nil {
 			t.Errorf("ThinkingConfig = %+v, want nil for Gemini 2.5 off", cfg.ThinkingConfig)
 		}
@@ -141,7 +153,10 @@ func TestThinkingOffByGeneration(t *testing.T) {
 
 	t.Run("gemini 3 pro off uses lowest level without thoughts", func(t *testing.T) {
 		// Gemini 3 cannot fully disable thinking: lowest level, thoughts hidden.
-		cfg := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.1-pro", Thinking: llm.ThinkingOff}, nil)
+		cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.1-pro", Thinking: llm.ThinkingOff}, nil)
+		if err != nil {
+			t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+		}
 		tc := cfg.ThinkingConfig
 		if tc == nil {
 			t.Fatal("ThinkingConfig is nil, want disabled-level config for Gemini 3 pro")
@@ -155,7 +170,10 @@ func TestThinkingOffByGeneration(t *testing.T) {
 	})
 
 	t.Run("gemini 3 flash off uses minimal level without thoughts", func(t *testing.T) {
-		cfg := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.5-flash", Thinking: llm.ThinkingOff}, nil)
+		cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-3.5-flash", Thinking: llm.ThinkingOff}, nil)
+		if err != nil {
+			t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+		}
 		tc := cfg.ThinkingConfig
 		if tc == nil {
 			t.Fatal("ThinkingConfig is nil, want disabled-level config for Gemini 3 flash")

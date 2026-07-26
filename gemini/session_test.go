@@ -13,8 +13,14 @@ func TestSessionIDIgnored(t *testing.T) {
 	withSession.SessionID = "sess-abc"
 
 	// when the provider builds the genai config for each
-	got := toGeminiConfig(withSession, nil)
-	want := toGeminiConfig(base, nil)
+	got, err := toGeminiConfig(withSession, nil)
+	if err != nil {
+		t.Fatalf("toGeminiConfig(withSession): unexpected error: %v", err)
+	}
+	want, err := toGeminiConfig(base, nil)
+	if err != nil {
+		t.Fatalf("toGeminiConfig(base): unexpected error: %v", err)
+	}
 
 	// then SessionID does not leak into Labels or CachedContent
 	if len(got.Labels) != 0 {

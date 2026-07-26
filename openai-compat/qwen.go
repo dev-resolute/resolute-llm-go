@@ -26,7 +26,8 @@ func classifyQwen(model string) classification {
 		strings.HasPrefix(m, "qwen-flash") || strings.HasPrefix(m, "qwen-turbo")
 	reasons := strings.HasPrefix(m, "qwen3") || strings.HasPrefix(m, "qwq") || commercial
 	return classification{
-		thinking: reasons && !strings.Contains(m, "coder"),
-		vision:   strings.Contains(m, "-vl"),
+		thinking:    reasons && !strings.Contains(m, "coder"),
+		vision:      strings.Contains(m, "-vl"),
+		strictTools: true,
 	}
 }

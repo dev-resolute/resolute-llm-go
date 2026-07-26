@@ -51,7 +51,7 @@ func TestMistralReasoningEffortGatedPerModel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := captureClassifiedBody(t, Compat{}, classifyMistral, llm.LLMRequest{
+			body := captureClassifiedBody(t, Config{}, classifyMistral, llm.LLMRequest{
 				Model:    tt.model,
 				Thinking: tt.thinking,
 				Messages: []llm.Message{{Role: "user", Content: llm.TextContent{Text: "hi"}}},
