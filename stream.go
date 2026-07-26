@@ -74,6 +74,10 @@ func (ToolCallEndEvent) isLLMEvent() {}
 // StopReason describes why the assistant message ended. Mirrors upstream's
 // StopReason set (types.ts:382) minus error/aborted, which this API signals
 // via LLMErrorEvent / StreamResult.Err.
+//
+// Native finish reasons without a portable mapping (e.g. OpenAI
+// content_filter) surface as StopReasonUnknown; this is not an error path —
+// no LLMErrorEvent is emitted for them.
 type StopReason string
 
 const (
