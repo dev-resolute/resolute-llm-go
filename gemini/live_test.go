@@ -66,6 +66,34 @@ func TestLiveGeminiThinkingSurfaces_2_5_Flash(t *testing.T) {
 	}
 }
 
+func TestLiveGeminiUsageEvent(t *testing.T) {
+	// given a live Gemini model
+	p := liveProvider(t)
+
+	// when a simple prompt streams to completion
+	stream := p.Stream(context.Background(), llm.LLMRequest{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{{Role: "user", Content: llm.TextContent{Text: "Say hi."}}},
+	})
+	var usage []llm.UsageEvent
+	for ev := range stream.Events {
+		if u, ok := ev.(llm.UsageEvent); ok {
+			usage = append(usage, u)
+		}
+	}
+	if res := <-stream.Done; res.Err != nil {
+		t.Fatalf("stream error: %v", res.Err)
+	}
+
+	// then exactly one UsageEvent carries the request's real totals
+	if len(usage) != 1 {
+		t.Fatalf("UsageEvents = %d, want exactly 1", len(usage))
+	}
+	if usage[0].InputTokens <= 0 || usage[0].OutputTokens <= 0 {
+		t.Errorf("UsageEvent = %+v, want positive input and output totals", usage[0])
+	}
+}
+
 func TestLiveGemini3ToolCallThoughtSignatureRoundTrip(t *testing.T) {
 	// given a live Gemini 3 model and a weather tool
 	p := liveProvider(t)

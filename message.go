@@ -18,6 +18,12 @@ type Content interface {
 // TextContent carries plain text.
 type TextContent struct {
 	Text string
+	// ThoughtSignature is an opaque provider token bound to this text part
+	// (Gemini thought signatures). Gemini can attach the signature to a part
+	// whose visible text is empty; such parts must be replayed verbatim or
+	// the reasoning chain breaks (upstream #7362). Callers replaying history
+	// must carry it back verbatim; empty for providers without one.
+	ThoughtSignature []byte
 }
 
 func (TextContent) isContent() {}
@@ -65,6 +71,10 @@ func (ImageContent) isContent() {}
 // ThinkingContent carries reasoning/thinking content from the LLM.
 type ThinkingContent struct {
 	Text string
+	// ThoughtSignature is an opaque provider token bound to this thinking
+	// part (Gemini thought signatures). Callers replaying history must carry
+	// it back verbatim; empty for providers without one.
+	ThoughtSignature []byte
 }
 
 func (ThinkingContent) isContent() {}

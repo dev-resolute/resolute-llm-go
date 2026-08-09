@@ -28,6 +28,8 @@ func captureRequest(t *testing.T, req llm.LLMRequest) capturedRequest {
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
 		flusher.Flush()
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
 		fmt.Fprintln(w, "data: [DONE]")
 	}))
 	t.Cleanup(ts.Close)

@@ -27,6 +27,8 @@ func captureClassifiedBody(t *testing.T, cfg Config, classify func(string) class
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
 		flusher.Flush()
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
 		fmt.Fprintln(w, "data: [DONE]")
 	}))
 	t.Cleanup(ts.Close)

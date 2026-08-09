@@ -34,6 +34,12 @@ type LLMEvent interface {
 // TextDeltaEvent carries a fragment of text output from the LLM.
 type TextDeltaEvent struct {
 	Delta string
+	// ThoughtSignature is an opaque provider token bound to the text part this
+	// delta belongs to (Gemini thought signatures). It typically appears on only
+	// one delta of a part — possibly one with an empty Delta — so consumers
+	// assembling a message retain the last non-empty value (upstream
+	// retainThoughtSignature); empty for providers without one.
+	ThoughtSignature []byte
 }
 
 func (TextDeltaEvent) isLLMEvent() {}
@@ -41,6 +47,8 @@ func (TextDeltaEvent) isLLMEvent() {}
 // ThinkingDeltaEvent carries a fragment of thinking/reasoning content.
 type ThinkingDeltaEvent struct {
 	Delta string
+	// ThoughtSignature behaves as on TextDeltaEvent, for thinking parts.
+	ThoughtSignature []byte
 }
 
 func (ThinkingDeltaEvent) isLLMEvent() {}
@@ -72,15 +80,24 @@ type ToolCallEndEvent struct {
 func (ToolCallEndEvent) isLLMEvent() {}
 
 // StopReason describes why the assistant message ended. Mirrors upstream's
-// StopReason set (types.ts:382) minus error/aborted, which this API signals
-// via LLMErrorEvent / StreamResult.Err.
+// StopReason set (types.ts) minus error/aborted/pending/deferred: terminal
+// provider stops are fatal errors, not stop reasons (see below), upstream's
+// pending is an interim partial-message state this event shape does not
+// expose, and deferred responses are out of scope.
 //
-// Native finish reasons without a portable mapping (e.g. OpenAI
-// content_filter) surface as StopReasonUnknown; this is not an error path —
-// no LLMErrorEvent is emitted for them.
+// Since 0.13.0 (upstream #7272 parity): native finish reasons without a
+// portable mapping (Gemini SAFETY/RECITATION/..., OpenAI
+// content_filter/network_error, or a genuinely unknown reason) surface as a
+// fatal LLMErrorEvent wrapping ErrProviderStop — never as a successful
+// StopReasonUnknown. A stream that ends without any finish reason is a
+// protocol error wrapping ErrMalformedResponse, unless the provider is known
+// to omit it (openai-compat Compat.SupportsFinishReason), in which case the
+// reason is inferred from content.
 type StopReason string
 
 const (
+	// StopReasonUnknown is the zero value. Providers no longer emit it on a
+	// successful MessageEndEvent; it remains for unmapped custom-provider use.
 	StopReasonUnknown StopReason = ""
 	StopReasonStop    StopReason = "stop"
 	StopReasonLength  StopReason = "length"
@@ -88,8 +105,9 @@ const (
 )
 
 // MessageEndEvent signals the end of the assistant's message.
-// It is always the last non-error event in a successful stream.
-// StopReason is StopReasonUnknown when the provider did not report one.
+// It is always the last non-error event in a successful stream; a stream that
+// terminates with a provider stop (or missing finish reason) emits a fatal
+// LLMErrorEvent instead.
 type MessageEndEvent struct {
 	StopReason StopReason
 }

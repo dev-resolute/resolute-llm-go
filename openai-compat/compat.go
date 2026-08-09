@@ -37,6 +37,18 @@ type Compat struct {
 	// MaxTokens, when greater than zero, is sent as the max_tokens body field. Some
 	// gateways (opencode-go) require it.
 	MaxTokens int
+	// SupportsFinishReason mirrors the upstream compat flag: nil (the default)
+	// means the provider is expected to terminate streams with finish_reason,
+	// and a stream ending without one is a protocol error. Set to false for
+	// providers known to omit it (some vLLM/llama.cpp-style local servers):
+	// the stop is then inferred from content (toolUse when calls streamed,
+	// stop otherwise).
+	SupportsFinishReason *bool
+	// SupportsUsageInStreaming mirrors the upstream compat flag: nil (the
+	// default) sends stream_options.include_usage so token usage streams; set
+	// to false for servers that reject stream_options. Usage reports are
+	// parsed and emitted whenever present regardless of this flag.
+	SupportsUsageInStreaming *bool
 }
 
 // reasoningEffort maps the portable thinking level to an OpenAI reasoning_effort
