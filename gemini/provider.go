@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"regexp"
 	"strings"
 	"sync"
@@ -258,6 +259,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 	var pendingToolCalls []llm.ToolCallContent
 	emittedToolCalls := map[string]bool{}
 	var finishReason genai.FinishReason
+	var lastUsage *genai.GenerateContentResponseUsageMetadata
 
 	// flushToolCalls ends every accumulated tool call and moves it into the
 	// result messages. Tool-call parts and the finish reason can arrive in
@@ -279,14 +281,37 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 		return nil
 	}
 
-	for chunk, err := range p.client.Models.GenerateContentStream(ctx, req.Model, contents, config) {
+	// The retried boundary is the stream open: the SDK performs the HTTP
+	// request lazily on first iteration, so the ladder pulls the first chunk
+	// inside op (emitting nothing) and the rest of the stream runs unretried
+	// (upstream retryGoogleRequest wraps the open call the same way).
+	var firstChunk *genai.GenerateContentResponse
+	var next func() (*genai.GenerateContentResponse, error, bool)
+	var stop func()
+	err = llm.Retry(ctx, p.config.Retry, p.name, req.Model, emit, func(ctx context.Context) error {
+		next, stop = iter.Pull2(p.client.Models.GenerateContentStream(ctx, req.Model, contents, config))
+		chunk, err, _ := next()
 		if err != nil {
-			err = classifyStreamError(err)
-			transient := isTransientError(err)
-			if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
-				return nil, emitErr
-			}
-			return nil, fmt.Errorf("gemini: stream error: %w", err)
+			stop()
+			return classifyOpenError(err)
+		}
+		firstChunk = chunk
+		return nil
+	})
+	if err != nil {
+		var terr *llm.TransientError
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: errors.As(err, &terr)}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, err
+	}
+	defer stop()
+
+	// processChunk handles one response chunk: usage capture (last report
+	// wins), content parts, and the finish-reason flush.
+	processChunk := func(chunk *genai.GenerateContentResponse) error {
+		if chunk.UsageMetadata != nil {
+			lastUsage = chunk.UsageMetadata
 		}
 
 		for _, cand := range chunk.Candidates {
@@ -294,13 +319,13 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 				continue
 			}
 			for _, part := range cand.Content.Parts {
-				if part.Text != "" {
+				if emitsTextDelta(part) {
 					if part.Thought {
-						if err := emit(llm.ThinkingDeltaEvent{Delta: part.Text}); err != nil {
-							return nil, err
+						if err := emit(llm.ThinkingDeltaEvent{Delta: part.Text, ThoughtSignature: part.ThoughtSignature}); err != nil {
+							return err
 						}
-					} else if err := emit(llm.TextDeltaEvent{Delta: part.Text}); err != nil {
-						return nil, err
+					} else if err := emit(llm.TextDeltaEvent{Delta: part.Text, ThoughtSignature: part.ThoughtSignature}); err != nil {
+						return err
 					}
 				}
 				if part.FunctionCall != nil {
@@ -320,7 +345,7 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 							Args:             call.Args,
 							ThoughtSignature: call.ThoughtSignature,
 						}); err != nil {
-							return nil, err
+							return err
 						}
 						pendingToolCalls = append(pendingToolCalls, call)
 					}
@@ -329,9 +354,33 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 			if cand.FinishReason != "" {
 				finishReason = cand.FinishReason
 				if err := flushToolCalls(); err != nil {
-					return nil, err
+					return err
 				}
 			}
+		}
+		return nil
+	}
+
+	if firstChunk != nil {
+		if err := processChunk(firstChunk); err != nil {
+			return nil, err
+		}
+	}
+	for {
+		chunk, err, ok := next()
+		if !ok {
+			break
+		}
+		if err != nil {
+			err = classifyStreamError(err)
+			transient := isTransientError(err)
+			if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
+				return nil, emitErr
+			}
+			return nil, fmt.Errorf("gemini: stream error: %w", err)
+		}
+		if err := processChunk(chunk); err != nil {
+			return nil, err
 		}
 	}
 
@@ -340,32 +389,96 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 		return nil, err
 	}
 
-	if err := emit(llm.MessageEndEvent{StopReason: mapGeminiFinishReason(finishReason, len(emittedToolCalls) > 0)}); err != nil {
+	stopReason, err := classifyGeminiStop(finishReason, len(emittedToolCalls) > 0)
+	if err != nil {
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: false}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, err
+	}
+
+	// At most one UsageEvent per stream, carrying the request's final totals,
+	// so consumer-side accumulation is exactly-once per call.
+	if lastUsage != nil {
+		if err := emit(usageEventFromMetadata(lastUsage)); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := emit(llm.MessageEndEvent{StopReason: stopReason}); err != nil {
 		return nil, err
 	}
 
 	return resultMessages, nil
 }
 
-// mapGeminiFinishReason maps a Gemini candidate finish reason to the portable
-// StopReason. Length wins over tool use: a MAX_TOKENS-truncated message's
-// calls may be incomplete (upstream #6285).
-func mapGeminiFinishReason(reason genai.FinishReason, sawToolCalls bool) llm.StopReason {
-	switch {
-	case reason == genai.FinishReasonMaxTokens:
-		return llm.StopReasonLength
-	case sawToolCalls:
-		return llm.StopReasonToolUse
-	case reason == genai.FinishReasonStop:
-		return llm.StopReasonStop
+// classifyGeminiStop maps a Gemini candidate finish reason to the portable
+// StopReason, or to a fatal error for terminal reasons without a portable
+// mapping (upstream #7272). Length wins over tool use: a MAX_TOKENS-truncated
+// message's calls may be incomplete (upstream #6285) — and so are the calls of
+// any error stop, so error reasons win over tool use too (upstream instead
+// maps any reason to toolUse when a toolCall block exists, which silently
+// bypasses both guards). An empty reason means the stream ended without a
+// finish reason — a protocol error (upstream's pending invariant), not a
+// silent unknown stop.
+func classifyGeminiStop(reason genai.FinishReason, sawToolCalls bool) (llm.StopReason, error) {
+	switch reason {
+	case "":
+		return llm.StopReasonUnknown, fmt.Errorf("gemini: %w: stream ended without a finish reason", llm.ErrMalformedResponse)
+	case genai.FinishReasonMaxTokens:
+		return llm.StopReasonLength, nil
+	case genai.FinishReasonStop:
+		if sawToolCalls {
+			return llm.StopReasonToolUse, nil
+		}
+		return llm.StopReasonStop, nil
+	case genai.FinishReasonSafety,
+		genai.FinishReasonRecitation,
+		genai.FinishReasonLanguage,
+		genai.FinishReasonOther,
+		genai.FinishReasonBlocklist,
+		genai.FinishReasonProhibitedContent,
+		genai.FinishReasonSPII,
+		genai.FinishReasonMalformedFunctionCall,
+		genai.FinishReasonImageSafety,
+		genai.FinishReasonUnexpectedToolCall,
+		genai.FinishReasonImageProhibitedContent,
+		genai.FinishReasonNoImage,
+		genai.FinishReasonImageRecitation,
+		genai.FinishReasonImageOther,
+		genai.FinishReasonUnspecified:
+		return llm.StopReasonUnknown, fmt.Errorf("gemini: %w: %s", llm.ErrProviderStop, reason)
 	default:
-		return llm.StopReasonUnknown
+		return llm.StopReasonUnknown, fmt.Errorf("gemini: %w: unhandled stop reason: %s", llm.ErrProviderStop, reason)
 	}
+}
+
+// usageEventFromMetadata computes the portable usage totals for one request
+// (upstream google-generative-ai.ts): input = prompt − cached content;
+// output = candidates + thoughts.
+func usageEventFromMetadata(m *genai.GenerateContentResponseUsageMetadata) llm.UsageEvent {
+	return llm.UsageEvent{
+		InputTokens:  int(m.PromptTokenCount - m.CachedContentTokenCount),
+		OutputTokens: int(m.CandidatesTokenCount + m.ThoughtsTokenCount),
+	}
+}
+
+// emitsTextDelta reports whether a streamed part produces a text/thinking
+// delta. Upstream keys the text branch on `part.text !== undefined`, which
+// functionCall parts lack; Go's value-typed Part.Text cannot distinguish
+// absent from empty, so the function-call check stands in for it. A text part
+// whose visible text is empty can still carry a thought signature — it must
+// emit so the signature reaches the assembled message and survives into
+// replayed history (upstream #7362) — while a signed function-call part's
+// signature rides the ToolCall events instead.
+func emitsTextDelta(part *genai.Part) bool {
+	return part.FunctionCall == nil && (part.Text != "" || len(part.ThoughtSignature) > 0)
 }
 
 func toGeminiContents(messages []llm.Message, model string) ([]*genai.Content, *genai.Content) {
 	var contents []*genai.Content
 	var systemInstruction *genai.Content
+	includeToolCallID := requiresToolCallID(classifyGemini(model))
 	for _, msg := range messages {
 		if msg.Role == "system" {
 			switch c := msg.Content.(type) {
@@ -380,9 +493,22 @@ func toGeminiContents(messages []llm.Message, model string) ([]*genai.Content, *
 		}
 		switch c := msg.Content.(type) {
 		case llm.TextContent:
-			contents = append(contents, genai.NewContentFromText(c.Text, role))
+			// Skip empty assistant text blocks — unless they carry a thought
+			// signature. Gemini can attach the signature to a part whose visible
+			// text is empty and requires it echoed back; dropping it breaks the
+			// reasoning chain (upstream #7362). The filter is assistant-only:
+			// user text passes through verbatim.
+			if role == genai.RoleModel && strings.TrimSpace(c.Text) == "" && len(c.ThoughtSignature) == 0 {
+				continue
+			}
+			part := genai.NewPartFromText(c.Text)
+			part.ThoughtSignature = c.ThoughtSignature
+			contents = append(contents, &genai.Content{Role: string(role), Parts: []*genai.Part{part}})
 		case llm.ToolCallContent:
 			part := genai.NewPartFromFunctionCall(c.ToolName, mustUnmarshalMap(c.Args))
+			if includeToolCallID {
+				part.FunctionCall.ID = c.CallID
+			}
 			part.ThoughtSignature = c.ThoughtSignature
 			contents = append(contents, &genai.Content{Role: string(role), Parts: []*genai.Part{part}})
 		case llm.ToolResultContent:
@@ -401,6 +527,9 @@ func toGeminiContents(messages []llm.Message, model string) ([]*genai.Content, *
 				response = map[string]any{"error": result}
 			}
 			fr := &genai.FunctionResponse{Name: name, Response: response}
+			if includeToolCallID {
+				fr.ID = c.CallID
+			}
 			nestImages := supportsMultimodalFunctionResponse(model)
 			if len(c.Images) > 0 && nestImages {
 				for _, img := range c.Images {
@@ -433,10 +562,25 @@ func toGeminiContents(messages []llm.Message, model string) ([]*genai.Content, *
 				Parts: []*genai.Part{{InlineData: &genai.Blob{MIMEType: c.MimeType, Data: c.Data}}},
 			})
 		case llm.ThinkingContent:
-			contents = append(contents, genai.NewContentFromText(c.Text, role))
+			// Replay thinking as a thought part carrying its signature, matching
+			// upstream for same-provider history (cross-provider translation is
+			// the caller's ConvertToLLM responsibility). An empty thinking block
+			// is dropped only when it carries no signature (upstream #7362).
+			if strings.TrimSpace(c.Text) == "" && len(c.ThoughtSignature) == 0 {
+				continue
+			}
+			part := &genai.Part{Thought: true, Text: c.Text, ThoughtSignature: c.ThoughtSignature}
+			contents = append(contents, &genai.Content{Role: string(role), Parts: []*genai.Part{part}})
 		}
 	}
 	return contents, systemInstruction
+}
+
+// requiresToolCallID reports whether the model needs explicit tool-call IDs on
+// functionCall/functionResponse parts for signed multi-turn replay (Gemini 3+;
+// upstream #7494). Pre-Gemini-3 backends and Gemma reject or ignore them.
+func requiresToolCallID(class geminiClass) bool {
+	return class == class3Pro || class == class3Flash
 }
 
 // supportsMultimodalFunctionResponse reports whether the model accepts images
@@ -545,6 +689,24 @@ func isTransientError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "429") || strings.Contains(msg, "503") || strings.Contains(msg, "502") || strings.Contains(msg, "504")
+}
+
+// classifyOpenError classifies a stream-open failure for the retry ladder
+// (upstream isRetryableProviderError): quota/conflict/timeout/server statuses
+// and transport failures without a status (DNS and friends — upstream #6946)
+// are transient; everything else keeps classifyStreamError's treatment
+// (deterministic 4xx stay ErrProviderFatal-wrapped, LLM-11; context-overflow
+// 400s pass through, LLM-8). The genai SDK exposes no response headers, so
+// retry-after hints are unavailable here — the ladder uses its backoff.
+func classifyOpenError(err error) error {
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return &llm.TransientError{Err: err}
+	}
+	if apiErr.Code == 408 || apiErr.Code == 409 || apiErr.Code == 429 || apiErr.Code >= 500 {
+		return &llm.TransientError{Err: err}
+	}
+	return classifyStreamError(err)
 }
 
 // classifyStreamError wraps deterministic client errors in llm.ErrProviderFatal

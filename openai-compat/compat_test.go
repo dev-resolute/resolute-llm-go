@@ -24,6 +24,8 @@ func captureBody(t *testing.T, cfg Config, req llm.LLMRequest) map[string]any {
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
 		flusher.Flush()
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
 		fmt.Fprintln(w, "data: [DONE]")
 	}))
 	defer ts.Close()

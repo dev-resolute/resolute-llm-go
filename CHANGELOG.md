@@ -1,5 +1,85 @@
 # Changelog
 
+## [0.12.0] - 2026-08-09
+
+> **Live validation:** full `gemini` integration suite passes against the live API —
+> tool-call thought-signature round trip incl. `FunctionCall.ID` replay and the strict
+> VALIDATED round trip on `gemini-3.1-pro-preview`, `TestLiveGeminiUsageEvent` on
+> `gemini-2.5-flash` — plus agent-core's `TestLiveGemini3AgentToolLoop`. Ports upstream
+> pi 0.82.1–0.84.1 (rediff record: `docs/issues/REDIFF-0.82.0-to-0.84.1.md`).
+
+### Breaking
+
+- **Unmapped and missing finish reasons are now fatal errors, not silent
+  `StopReasonUnknown` stops (LLM-17, upstream #7272 parity).** Both providers previously
+  mapped any unrecognized terminal reason — and any stream that ended without a finish
+  reason — to `StopReasonUnknown`, a silent "success". Now: Gemini
+  `SAFETY`/`RECITATION`/`LANGUAGE`/`OTHER`/`BLOCKLIST`/`PROHIBITED_CONTENT`/`SPII`/
+  `MALFORMED_FUNCTION_CALL`/`IMAGE_SAFETY`/`UNEXPECTED_TOOL_CALL`/
+  `IMAGE_PROHIBITED_CONTENT`/`NO_IMAGE`/`IMAGE_RECITATION`/`IMAGE_OTHER`/
+  `FINISH_REASON_UNSPECIFIED`, OpenAI `content_filter`/`network_error`, and genuinely
+  unknown reasons surface as a **non-transient `LLMErrorEvent` wrapping the new
+  `llm.ErrProviderStop`** and a non-nil `StreamResult.Err` (no `MessageEndEvent`).
+  A stream ending without any finish reason is a protocol error wrapping
+  `llm.ErrMalformedResponse` (upstream's `"pending"` invariant), unless the provider
+  opts out via `Compat.SupportsFinishReason`. **Error reasons win over toolUse even
+  with calls in flight** (deliberate divergence: upstream maps any reason to toolUse
+  when a toolCall block exists, silently bypassing its own #6285 truncation guard).
+  `StopReasonUnknown` remains in the enum as the zero value but is no longer emitted
+  by either shipped provider on a successful stream.
+- **Providers now retry transient stream-open failures — default-on (LLM-18, upstream
+  `retryProviderRequest` port).** `RetryPolicy` is finally consumed by both providers,
+  and `LLMRetryEvent` is finally emitted. The zero value resolves to the documented
+  defaults (**3 retries, 60s cap** — upstream's agent policy), so streams that used to
+  fail immediately on a 429/5xx/transport blip (including DNS failures, upstream #6946)
+  now succeed after a wait; **opt out with `MaxRetries: -1`**, and lift the cap on
+  server-requested waits with `MaxRetryDelay: -1`. The retried boundary is the
+  **stream-open phase only** — streaming proper is never retried, so content is never
+  duplicated. Rules match upstream `getRetryDelayMs`: `retry-after`/`retry-after-ms`
+  hints win and **fail immediately above the cap** (message names both delays);
+  otherwise exponential `min(0.5·2^attempt, 8)s` with −0–25% jitter;
+  `x-should-retry: true|false` response header overrides classification
+  (openai-compat). Exhausted retries surface exactly as before
+  (`LLMErrorEvent{Transient: true}` + `StreamResult.Err`), and intermediate attempts
+  now emit `LLMRetryEvent` instead of per-attempt `LLMErrorEvent`s.
+
+### Added
+
+- **Text/thinking thought signatures round-trip (LLM-16, upstream #7362).**
+  `ThoughtSignature` on `TextContent`/`ThinkingContent` and on
+  `TextDeltaEvent`/`ThinkingDeltaEvent`: Gemini attaches signatures to text and
+  thinking parts — including parts whose visible text is empty — and requires them
+  echoed back on replay, or the reasoning chain breaks. The provider emits the
+  signature on delta events (typically one delta of a part, possibly with an empty
+  `Delta`; consumers retain the last non-empty value) and `toGeminiContents` replays
+  it verbatim. Empty assistant text/thinking blocks are dropped only when unsigned;
+  user text is never filtered; `ThinkingContent` now converts to a real
+  `Thought: true` part instead of flattened text.
+- **Tool-call IDs on Gemini 3 history conversion (LLM-16, upstream #7494).**
+  `toGeminiContents` sets `FunctionCall.ID`/`FunctionResponse.ID` from the recorded
+  `CallID` when the model class is Gemini 3 (new `requiresToolCallID` gate) — signed
+  multi-turn replay breaks without them. Pre-Gemini-3 models and Gemma 4 get no IDs.
+- **`Compat.SupportsFinishReason *bool` (LLM-17, upstream 0.84.0).** nil = the
+  provider is expected to terminate streams with `finish_reason`; set `false` for
+  providers known to omit it (some vLLM/llama.cpp-style local servers) — the stop is
+  then inferred from content, and tool calls still buffered at stream end are flushed
+  with finalized arguments instead of being dropped.
+- **Providers emit `UsageEvent` (LLM-19) — no longer a dead type.** At most one per
+  stream, final totals, immediately before `MessageEndEvent` (last report wins), so
+  consumer-side accumulation (Compact's `BranchSummary.Usage`) is exactly-once per
+  call. openai-compat sends `stream_options: {include_usage: true}` (new
+  `Compat.SupportsUsageInStreaming *bool`, nil = send) and parses chunk-level `usage`
+  plus the Moonshot-style per-choice fallback (`input = max(0, prompt − cached −
+  cache_write)`; llama.cpp reports usage once asked — upstream #7258 by construction);
+  gemini maps `usageMetadata` (`input = prompt − cached`; `output = candidates +
+  thoughts`).
+- **`llm.Retry` and `llm.TransientError` — the shared retry ladder (LLM-18).**
+  Providers wrap their stream-open phase in `llm.Retry(ctx, policy, provider, model,
+  emit, op)`; classification stays provider-owned via `*TransientError{Err,
+  RetryAfter}` returns. openai-compat re-resolves `GetAPIKey` per attempt (expiring
+  credentials refresh across retries); gemini retries with backoff only (the genai
+  SDK exposes no response headers).
+
 ## [0.11.0] - 2026-07-26
 
 > **Live validation:** `TestLiveGeminiStrictPreferToolRoundTrip` passes against the live

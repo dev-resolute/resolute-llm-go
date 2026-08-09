@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,17 +108,6 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 		return nil, fmt.Errorf("openai-compat: %w: %s", llm.ErrTransportUnsupported, req.Transport)
 	}
 
-	apiKey := p.config.APIKey
-	if p.config.GetAPIKey != nil {
-		key, err := p.config.GetAPIKey(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("openai-compat: refreshing api key: %w", err)
-		}
-		if key != "" {
-			apiKey = key
-		}
-	}
-
 	body, err := p.toRequestBody(req)
 	if err != nil {
 		// Every error toRequestBody can produce today is deterministic (a
@@ -129,6 +120,45 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 			return nil, emitErr
 		}
 		return nil, fatalErr
+	}
+
+	// The retried boundary is the stream open: classification failures inside
+	// open emit nothing, the ladder emits LLMRetryEvent per attempt, and only
+	// the final failure becomes an LLMErrorEvent below. Streaming proper
+	// (readSSE) runs unretried so content is never duplicated.
+	var resp *http.Response
+	err = llm.Retry(ctx, p.config.Retry, p.name, req.Model, emit, func(ctx context.Context) error {
+		var openErr error
+		resp, openErr = p.open(ctx, req, body, headers, setResponseMeta)
+		return openErr
+	})
+	if err != nil {
+		var terr *llm.TransientError
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: errors.As(err, &terr)}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return p.readSSE(ctx, resp, emit)
+}
+
+// open performs one stream-open attempt: resolves the API key (per attempt, so
+// expiring credentials refresh across retries), issues the HTTP request, and
+// classifies failures for the retry ladder — transport errors, 408/409/429,
+// and 5xx are transient (upstream isRetryableProviderError, with the
+// x-should-retry header veto/override), everything else fatal.
+func (p *Provider) open(ctx context.Context, req llm.LLMRequest, body []byte, headers map[string]string, setResponseMeta func(status int, respHeaders map[string]string)) (*http.Response, error) {
+	apiKey := p.config.APIKey
+	if p.config.GetAPIKey != nil {
+		key, err := p.config.GetAPIKey(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("openai-compat: refreshing api key: %w", err)
+		}
+		if key != "" {
+			apiKey = key
+		}
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(body))
@@ -155,13 +185,9 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		transient := isNetworkError(err)
-		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
-			return nil, emitErr
-		}
-		return nil, fmt.Errorf("openai-compat: request failed: %w", err)
+		// No status at all: a transport failure, always transient.
+		return nil, &llm.TransientError{Err: fmt.Errorf("openai-compat: request failed: %w", err)}
 	}
-	defer resp.Body.Close()
 
 	if setResponseMeta != nil {
 		respHeaders := make(map[string]string)
@@ -173,16 +199,46 @@ func (p *Provider) produce(ctx context.Context, req llm.LLMRequest, emit func(ll
 		setResponseMeta(resp.StatusCode, respHeaders)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		err := fmt.Errorf("openai-compat: HTTP %d", resp.StatusCode)
-		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: transient}); emitErr != nil {
-			return nil, emitErr
-		}
-		return nil, err
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
 	}
+	defer resp.Body.Close()
 
-	return p.readSSE(ctx, resp, emit)
+	httpErr := fmt.Errorf("openai-compat: HTTP %d", resp.StatusCode)
+	switch resp.Header.Get("x-should-retry") {
+	case "true":
+		return nil, &llm.TransientError{Err: httpErr, RetryAfter: parseRetryAfter(resp.Header)}
+	case "false":
+		return nil, httpErr
+	}
+	if resp.StatusCode == http.StatusRequestTimeout ||
+		resp.StatusCode == http.StatusConflict ||
+		resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode >= 500 {
+		return nil, &llm.TransientError{Err: httpErr, RetryAfter: parseRetryAfter(resp.Header)}
+	}
+	return nil, httpErr
+}
+
+// parseRetryAfter reads the server's requested wait: retry-after-ms
+// (milliseconds) wins over retry-after (seconds or HTTP-date). 0 when absent
+// or unparsable; may be negative for a past HTTP-date, which the ladder's
+// sleep clamps.
+func parseRetryAfter(h http.Header) time.Duration {
+	if v := h.Get("retry-after-ms"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return time.Duration(f * float64(time.Millisecond))
+		}
+	}
+	if v := h.Get("retry-after"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return time.Duration(f * float64(time.Second))
+		}
+		if ts, err := http.ParseTime(v); err == nil {
+			return time.Until(ts)
+		}
+	}
+	return 0
 }
 
 // maxPromptCacheKeyLength is the OpenAI prompt_cache_key limit, matching upstream Pi.
@@ -202,6 +258,9 @@ func (p *Provider) toRequestBody(req llm.LLMRequest) ([]byte, error) {
 		"model":    req.Model,
 		"stream":   true,
 		"messages": toOpenAIMessages(req.Messages, p.config.Compat),
+	}
+	if p.supportsUsageInStreaming() {
+		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	if len(req.Tools) > 0 {
 		tools, err := toOpenAITools(req.Tools, p.supportsStrictTools(req.Model))
@@ -417,6 +476,33 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 	var toolCallOrder []string
 	var finishReason string
 	var sawToolCalls bool
+	var lastUsage *usageChunk
+
+	// flushToolCalls ends every buffered call in first-appearance order and
+	// moves it into the result messages. Calls flush when a finish_reason
+	// chunk arrives, or at stream end for providers that omit finish_reason.
+	flushToolCalls := func() error {
+		for _, id := range toolCallOrder {
+			buf := toolCallBufs[id]
+			var args json.RawMessage
+			if buf.args.Len() > 0 {
+				args = json.RawMessage(buf.args.String())
+			}
+			if err := emit(llm.ToolCallEndEvent{CallID: id, ToolName: buf.name, Args: args}); err != nil {
+				return err
+			}
+			resultMessages = append(resultMessages, llm.Message{
+				Role:    "assistant",
+				Content: llm.ToolCallContent{CallID: id, ToolName: buf.name, Args: args},
+			})
+		}
+		if toolCallBufs != nil {
+			sawToolCalls = true
+		}
+		toolCallBufs = nil
+		toolCallOrder = nil
+		return nil
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -433,7 +519,16 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 			continue
 		}
 
+		// Usage rides its own chunk (possibly with empty choices), or
+		// Moonshot-style on a choice when the chunk has none. Last report wins.
+		if chunk.Usage != nil {
+			lastUsage = chunk.Usage
+		}
+
 		for _, choice := range chunk.Choices {
+			if chunk.Usage == nil && choice.Usage != nil {
+				lastUsage = choice.Usage
+			}
 			if choice.Delta.Content != "" {
 				assistantText.WriteString(choice.Delta.Content)
 				if err := emit(llm.TextDeltaEvent{Delta: choice.Delta.Content}); err != nil {
@@ -470,31 +565,31 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 			}
 			if choice.FinishReason != "" {
 				finishReason = choice.FinishReason
-			}
-			if choice.FinishReason != "" && toolCallBufs != nil {
-				for _, id := range toolCallOrder {
-					buf := toolCallBufs[id]
-					var args json.RawMessage
-					if buf.args.Len() > 0 {
-						args = json.RawMessage(buf.args.String())
-					}
-					if err := emit(llm.ToolCallEndEvent{CallID: id, ToolName: buf.name, Args: args}); err != nil {
-						return nil, err
-					}
-					resultMessages = append(resultMessages, llm.Message{
-						Role:    "assistant",
-						Content: llm.ToolCallContent{CallID: id, ToolName: buf.name, Args: args},
-					})
+				if err := flushToolCalls(); err != nil {
+					return nil, err
 				}
-				toolCallBufs = nil
-				toolCallOrder = nil
-				sawToolCalls = true
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("openai-compat: SSE read error: %w", err)
+	}
+
+	// A provider expected to send finish_reason that ends without one is a
+	// protocol error (upstream's pending invariant), not a silent unknown stop.
+	supportsFinishReason := p.supportsFinishReason()
+	if finishReason == "" && supportsFinishReason {
+		err := fmt.Errorf("openai-compat: %w: stream ended without finish_reason", llm.ErrMalformedResponse)
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: false}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, err
+	}
+	// Providers known to omit finish_reason end here with calls still
+	// buffered: flush them so the inference below sees the full content.
+	if err := flushToolCalls(); err != nil {
+		return nil, err
 	}
 
 	if assistantText.Len() > 0 {
@@ -504,29 +599,73 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 		})
 	}
 
-	if err := emit(llm.MessageEndEvent{StopReason: mapFinishReason(finishReason, sawToolCalls)}); err != nil {
+	stopReason, err := compatStopReason(finishReason, sawToolCalls, supportsFinishReason)
+	if err != nil {
+		if emitErr := emit(llm.LLMErrorEvent{Error: err, Transient: false}); emitErr != nil {
+			return nil, emitErr
+		}
+		return nil, err
+	}
+
+	// At most one UsageEvent per stream, carrying the request's final totals,
+	// so consumer-side accumulation is exactly-once per call.
+	if lastUsage != nil {
+		if err := emit(mapUsageChunk(lastUsage)); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := emit(llm.MessageEndEvent{StopReason: stopReason}); err != nil {
 		return nil, err
 	}
 
 	return resultMessages, nil
 }
 
-// mapFinishReason maps an OpenAI finish_reason to the portable StopReason.
-// Length wins over tool_calls: a truncated message's calls may be incomplete
-// (upstream #6285) and the consumer must be able to tell.
-func mapFinishReason(finishReason string, sawToolCalls bool) llm.StopReason {
+// supportsUsageInStreaming resolves Compat.SupportsUsageInStreaming: nil
+// means the provider accepts stream_options.include_usage (upstream default).
+func (p *Provider) supportsUsageInStreaming() bool {
+	return p.config.Compat.SupportsUsageInStreaming == nil || *p.config.Compat.SupportsUsageInStreaming
+}
+
+// supportsFinishReason resolves Compat.SupportsFinishReason: nil means the
+// provider is expected to terminate streams with finish_reason (upstream
+// default true).
+func (p *Provider) supportsFinishReason() bool {
+	return p.config.Compat.SupportsFinishReason == nil || *p.config.Compat.SupportsFinishReason
+}
+
+// compatStopReason maps an OpenAI finish_reason to the portable StopReason, or
+// to a fatal error for terminal reasons without a portable mapping (upstream
+// #7272). An empty reason is a protocol error for providers expected to send
+// one, and inferred from content for providers known to omit it. Length wins
+// over tool calls: truncated arguments may be incomplete (upstream #6285) —
+// and an error stop's calls may be equally borked, so error reasons win over
+// toolUse too (upstream maps any reason with a toolCall block to toolUse,
+// silently bypassing both guards).
+func compatStopReason(finishReason string, sawToolCalls, supportsFinishReason bool) (llm.StopReason, error) {
+	if finishReason == "" {
+		if supportsFinishReason {
+			return llm.StopReasonUnknown, fmt.Errorf("openai-compat: %w: stream ended without finish_reason", llm.ErrMalformedResponse)
+		}
+		if sawToolCalls {
+			return llm.StopReasonToolUse, nil
+		}
+		return llm.StopReasonStop, nil
+	}
 	switch finishReason {
 	case "length":
-		return llm.StopReasonLength
-	case "tool_calls":
-		return llm.StopReasonToolUse
-	case "stop":
+		return llm.StopReasonLength, nil
+	case "tool_calls", "function_call":
+		return llm.StopReasonToolUse, nil
+	case "stop", "end":
+		// Some servers report "stop" despite having streamed tool calls.
 		if sawToolCalls {
-			return llm.StopReasonToolUse
+			return llm.StopReasonToolUse, nil
 		}
-		return llm.StopReasonStop
+		return llm.StopReasonStop, nil
 	default:
-		return llm.StopReasonUnknown
+		return llm.StopReasonUnknown, fmt.Errorf("openai-compat: %w: finish_reason %q", llm.ErrProviderStop, finishReason)
 	}
 }
 
@@ -534,6 +673,38 @@ type toolCallBuffer struct {
 	id   string
 	name string
 	args strings.Builder
+}
+
+type usagePromptDetails struct {
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+}
+
+// usageChunk is one usage report on a stream chunk (or, for Moonshot-style
+// servers, on a choice). prompt_cache_hit_tokens is the legacy DeepSeek form
+// of cached_tokens.
+type usageChunk struct {
+	PromptTokens         int                 `json:"prompt_tokens"`
+	CompletionTokens     int                 `json:"completion_tokens"`
+	PromptCacheHitTokens int                 `json:"prompt_cache_hit_tokens"`
+	PromptTokensDetails  *usagePromptDetails `json:"prompt_tokens_details"`
+}
+
+// mapUsageChunk computes the portable totals for one request (upstream
+// parseChunkUsage): input = prompt − cache-read − cache-write, floored at
+// zero; output = completion (already includes reasoning tokens).
+func mapUsageChunk(u *usageChunk) llm.UsageEvent {
+	cached := u.PromptCacheHitTokens
+	var cacheWrite int
+	if u.PromptTokensDetails != nil {
+		cached += u.PromptTokensDetails.CachedTokens
+		cacheWrite = u.PromptTokensDetails.CacheWriteTokens
+	}
+	input := u.PromptTokens - cached - cacheWrite
+	if input < 0 {
+		input = 0
+	}
+	return llm.UsageEvent{InputTokens: input, OutputTokens: u.CompletionTokens}
 }
 
 type streamChunk struct {
@@ -549,13 +720,8 @@ type streamChunk struct {
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
+		FinishReason string      `json:"finish_reason"`
+		Usage        *usageChunk `json:"usage"`
 	} `json:"choices"`
-}
-
-func isNetworkError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return true // conservative: treat all network errors as transient
+	Usage *usageChunk `json:"usage"`
 }
