@@ -155,6 +155,21 @@ func (c geminiClass) disabledThinkingLevel() genai.ThinkingLevel {
 	return genai.ThinkingLevelMinimal
 }
 
+// clampThinkingLevel drops levels the model family rejects (upstream #9455):
+// Gemini 3 Pro accepts only LOW and HIGH, so MINIMAL clamps to LOW and MEDIUM
+// to HIGH. Flash and Gemma 4 accept the full enum.
+func clampThinkingLevel(class geminiClass, level genai.ThinkingLevel) genai.ThinkingLevel {
+	if class == class3Pro {
+		switch level {
+		case genai.ThinkingLevelMinimal:
+			return genai.ThinkingLevelLow
+		case genai.ThinkingLevelMedium:
+			return genai.ThinkingLevelHigh
+		}
+	}
+	return level
+}
+
 func thinkingLevelFor(level llm.ThinkingLevel) genai.ThinkingLevel {
 	switch level {
 	case llm.ThinkingLow:
@@ -178,7 +193,7 @@ func thinkingConfigFor(req llm.LLMRequest) *genai.ThinkingConfig {
 	}
 	if class.usesThinkingLevel() {
 		return &genai.ThinkingConfig{
-			ThinkingLevel:   thinkingLevelFor(req.Thinking),
+			ThinkingLevel:   clampThinkingLevel(class, thinkingLevelFor(req.Thinking)),
 			IncludeThoughts: true,
 		}
 	}
@@ -688,7 +703,7 @@ func isTransientError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "429") || strings.Contains(msg, "503") || strings.Contains(msg, "502") || strings.Contains(msg, "504")
+	return strings.Contains(msg, "429") || strings.Contains(msg, "500") || strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "504") || strings.Contains(msg, "520")
 }
 
 // classifyOpenError classifies a stream-open failure for the retry ladder

@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.13.0] - 2026-09-20
+
+> Ports upstream pi 0.84.2–0.86.0 (rediff record:
+> `docs/issues/REDIFF-0.84.1-to-0.86.0.md` in the pi-research workspace).
+
+### Fixed
+
+- **Kimi top-level `cached_tokens` count as cache reads (upstream #8075).**
+  The usage chunk parser now reads the top-level `cached_tokens` field Kimi
+  reports and subtracts it from input tokens, like `prompt_cache_hit_tokens`
+  and `prompt_tokens_details.cached_tokens` — previously those tokens were
+  billed as normal input.
+- **Mistral fragmented tool calls merge (upstream #8387).** Mistral streams
+  one logical tool call across chunks whose continuation deltas omit the
+  tool-call ID; those deltas now merge into the currently open call instead
+  of splitting into a second, empty-ID call with orphaned arguments.
+- **Gemini 3 Pro thinking levels clamp to the supported set (upstream
+  #9455).** Gemini 3 Pro accepts only LOW and HIGH thinking levels; the
+  adapter previously sent MINIMAL (for `ThinkingMinimal`) and MEDIUM (for
+  `ThinkingMedium`) verbatim and collected HTTP 400s. MINIMAL now clamps to
+  LOW and MEDIUM to HIGH; flash and Gemma 4 keep the full enum.
+- **Mid-stream 500/520 errors flagged transient in Gemini `LLMErrorEvent`s.**
+  `isTransientError` previously matched only 429/502/503/504.
+
+### Added
+
+- **`x-session-id` affinity header (upstream #9102/#9629).** Requests with a
+  `SessionID` now also send `x-session-id`, the header OpenRouter and Baseten
+  route prompt-cache reads on, alongside the existing `session_id`,
+  `x-client-request-id`, and `x-session-affinity` headers.
+
+### Verified already-compliant (regression pins added)
+
+- Bodyless HTTP 400/413 errors are not classified as context overflow
+  (upstream #9482) — pinned in `overflow_test.go`.
+- Cloudflare 520 and Azure peak-load responses retry (upstream #9627/#9669)
+  — covered by the blanket 429/5xx transient classification.
+- Mistral Medium reasoning uses `reasoning_effort`, never `prompt_mode`
+  (upstream #8700) — `classifyMistral` already maps the hybrid line.
+- Reasoning-mandatory models never receive `effort: "none"` (upstream
+  #8614) — the adapter omits the field entirely when thinking is off.
+- Gemini output-limit and provider-error stops win over in-flight tool calls
+  (upstream #8059) — already enforced, stricter than upstream.
+
+### Not applicable / deferred
+
+- All Codex/Responses-adapter items (`prompt_cache_options.ttl`, Off effort,
+  SSE terminal events), Anthropic fallback pricing, Bedrock, Fireworks
+  `tool_search` deferred loading, `vllmPriority`/`supportsMaxOutputTokens`
+  (no model catalog, ADR-0008): no such adapters/configs exist here.
+- `reasoning_details` verbatim replay (upstream #7994/#8671) and unsigned
+  thinking replay (#9676): replay-fidelity feature, deferred with the
+  transcript-backed prompt updates and cache-warming features to a future
+  release.
+
 ## [0.12.0] - 2026-08-09
 
 > **Live validation:** full `gemini` integration suite passes against the live API —

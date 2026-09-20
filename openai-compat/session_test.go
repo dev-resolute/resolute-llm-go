@@ -53,7 +53,7 @@ func TestSessionIDSetsAffinityHeadersAndCacheKey(t *testing.T) {
 	cap := captureRequest(t, llm.LLMRequest{SessionID: "sess-abc"})
 
 	// then the affinity headers and prompt_cache_key are populated from it
-	for _, h := range []string{"Session_id", "X-Client-Request-Id", "X-Session-Affinity"} {
+	for _, h := range []string{"Session_id", "X-Client-Request-Id", "X-Session-Affinity", "X-Session-Id"} {
 		if got := cap.headers.Get(h); got != "sess-abc" {
 			t.Errorf("header %s = %q, want %q", h, got, "sess-abc")
 		}
@@ -87,7 +87,7 @@ func TestEmptySessionIDOmitsAffinity(t *testing.T) {
 	cap := captureRequest(t, llm.LLMRequest{})
 
 	// then no affinity headers and no prompt_cache_key are sent
-	for _, h := range []string{"Session_id", "X-Client-Request-Id", "X-Session-Affinity"} {
+	for _, h := range []string{"Session_id", "X-Client-Request-Id", "X-Session-Affinity", "X-Session-Id"} {
 		if got := cap.headers.Get(h); got != "" {
 			t.Errorf("header %s = %q, want empty", h, got)
 		}

@@ -175,6 +175,9 @@ func (p *Provider) open(ctx context.Context, req llm.LLMRequest, body []byte, he
 		httpReq.Header.Set("session_id", req.SessionID)
 		httpReq.Header.Set("x-client-request-id", req.SessionID)
 		httpReq.Header.Set("x-session-affinity", req.SessionID)
+		// x-session-id is the affinity header OpenRouter (#9102) and Baseten
+		// (#9629) route prompt-cache reads on (upstream 0.86.0).
+		httpReq.Header.Set("x-session-id", req.SessionID)
 	}
 	for k, v := range p.config.Headers {
 		httpReq.Header.Set(k, v)
@@ -544,14 +547,21 @@ func (p *Provider) readSSE(ctx context.Context, resp *http.Response, emit func(l
 				if toolCallBufs == nil {
 					toolCallBufs = make(map[string]*toolCallBuffer)
 				}
-				buf, ok := toolCallBufs[tc.ID]
+				// Mistral fragments one logical call across chunks whose
+				// continuation deltas omit the tool-call ID: they belong to the
+				// currently open call, not a new empty-ID call (upstream #8387).
+				id := tc.ID
+				if id == "" && len(toolCallOrder) > 0 {
+					id = toolCallOrder[len(toolCallOrder)-1]
+				}
+				buf, ok := toolCallBufs[id]
 				if !ok {
-					buf = &toolCallBuffer{id: tc.ID, name: tc.Function.Name}
-					toolCallBufs[tc.ID] = buf
-					toolCallOrder = append(toolCallOrder, tc.ID)
+					buf = &toolCallBuffer{id: id, name: tc.Function.Name}
+					toolCallBufs[id] = buf
+					toolCallOrder = append(toolCallOrder, id)
 					if tc.Function.Name != "" {
 						if err := emit(llm.ToolCallStartEvent{
-							CallID:   tc.ID,
+							CallID:   id,
 							ToolName: tc.Function.Name,
 							Args:     nil,
 						}); err != nil {
@@ -682,11 +692,13 @@ type usagePromptDetails struct {
 
 // usageChunk is one usage report on a stream chunk (or, for Moonshot-style
 // servers, on a choice). prompt_cache_hit_tokens is the legacy DeepSeek form
-// of cached_tokens.
+// of cached_tokens; the top-level cached_tokens field is Kimi's form — it
+// counts as cache reads, not normal input (upstream #8075).
 type usageChunk struct {
 	PromptTokens         int                 `json:"prompt_tokens"`
 	CompletionTokens     int                 `json:"completion_tokens"`
 	PromptCacheHitTokens int                 `json:"prompt_cache_hit_tokens"`
+	CachedTokens         int                 `json:"cached_tokens"`
 	PromptTokensDetails  *usagePromptDetails `json:"prompt_tokens_details"`
 }
 
@@ -694,7 +706,7 @@ type usageChunk struct {
 // parseChunkUsage): input = prompt − cache-read − cache-write, floored at
 // zero; output = completion (already includes reasoning tokens).
 func mapUsageChunk(u *usageChunk) llm.UsageEvent {
-	cached := u.PromptCacheHitTokens
+	cached := u.PromptCacheHitTokens + u.CachedTokens
 	var cacheWrite int
 	if u.PromptTokensDetails != nil {
 		cached += u.PromptTokensDetails.CachedTokens

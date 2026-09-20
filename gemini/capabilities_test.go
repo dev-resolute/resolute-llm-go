@@ -122,10 +122,12 @@ func TestThinkingConfigMechanismByGeneration(t *testing.T) {
 	})
 
 	t.Run("gemini 3 level mapping", func(t *testing.T) {
+		// Gemini 3 Pro accepts only LOW and HIGH: MINIMAL clamps to LOW and
+		// MEDIUM to HIGH (upstream #9455).
 		levels := map[llm.ThinkingLevel]genai.ThinkingLevel{
-			llm.ThinkingMinimal: genai.ThinkingLevelMinimal,
+			llm.ThinkingMinimal: genai.ThinkingLevelLow,
 			llm.ThinkingLow:     genai.ThinkingLevelLow,
-			llm.ThinkingMedium:  genai.ThinkingLevelMedium,
+			llm.ThinkingMedium:  genai.ThinkingLevelHigh,
 			llm.ThinkingHigh:    genai.ThinkingLevelHigh,
 		}
 		for portable, want := range levels {
