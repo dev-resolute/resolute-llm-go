@@ -34,7 +34,7 @@
 
 **LLMRequest.Headers**: Per-call header overrides merged over `Config.Headers` (request wins). The path for hook-injected trace/tenant headers to reach the wire.
 
-**SessionID**: Optional conversation identifier for prompt-cache affinity. The OpenAI-compatible adapter sends it as affinity headers (`session_id`, `x-client-request-id`, `x-session-affinity`) and the `prompt_cache_key` body param; the Gemini adapter ignores it.
+**SessionID**: Optional conversation identifier for prompt-cache affinity. The OpenAI-compatible adapter sends it as affinity headers (`session_id`, `x-client-request-id`, `x-session-affinity`, `x-session-id`) and the `prompt_cache_key` body param; the Gemini adapter ignores it.
 
 **Transport**: `TransportPreference` enum (`TransportAuto` default, `TransportSSE`, `TransportWebSocket`). `TransportWebSocket` returns `ErrTransportUnsupported` from today's HTTP/SSE-only providers; reserved for a future websocket provider.
 

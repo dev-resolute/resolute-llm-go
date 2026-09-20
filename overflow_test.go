@@ -32,6 +32,16 @@ func TestAsContextOverflow(t *testing.T) {
 			wantMatch: false,
 		},
 		{
+			name:      "bodyless HTTP 400 is not overflow (upstream #9482)",
+			err:       errors.New("openai-compat: HTTP 400"),
+			wantMatch: false,
+		},
+		{
+			name:      "bodyless HTTP 413 is not overflow (upstream #9482)",
+			err:       errors.New("openai-compat: HTTP 413"),
+			wantMatch: false,
+		},
+		{
 			name:      "nil error",
 			err:       nil,
 			wantMatch: false,

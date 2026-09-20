@@ -125,6 +125,30 @@ func TestThinkingLevelBudgetMapping(t *testing.T) {
 	}
 }
 
+func TestGemini3ProClampsUnsupportedLevels(t *testing.T) {
+	// Gemini 3 Pro accepts only LOW and HIGH thinking levels; MINIMAL and
+	// MEDIUM must clamp instead of 400ing (upstream #9455).
+	for _, tt := range []struct {
+		level llm.ThinkingLevel
+		want  genai.ThinkingLevel
+	}{
+		{llm.ThinkingMinimal, genai.ThinkingLevelLow},
+		{llm.ThinkingLow, genai.ThinkingLevelLow},
+		{llm.ThinkingMedium, genai.ThinkingLevelHigh},
+		{llm.ThinkingHigh, genai.ThinkingLevelHigh},
+	} {
+		cfg := thinkingConfigFor(llm.LLMRequest{Model: "gemini-3.1-pro-preview", Thinking: tt.level})
+		if cfg == nil || cfg.ThinkingLevel != tt.want {
+			t.Errorf("gemini-3-pro level for %v = %+v, want %v", tt.level, cfg, tt.want)
+		}
+	}
+	// Flash supports the full enum: MEDIUM passes through unclamped.
+	cfg := thinkingConfigFor(llm.LLMRequest{Model: "gemini-3-flash-preview", Thinking: llm.ThinkingMedium})
+	if cfg == nil || cfg.ThinkingLevel != genai.ThinkingLevelMedium {
+		t.Errorf("gemini-3-flash level for medium = %+v, want MEDIUM", cfg)
+	}
+}
+
 func TestThinkingXhighMaxClampToHigh(t *testing.T) {
 	// Upstream clamps xhigh/max to high for token-budget Gemini models
 	// (simple-options.ts clampReasoning) and Gemini 3 has no enum above HIGH.

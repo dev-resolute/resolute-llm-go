@@ -29,6 +29,9 @@ func TestMapUsageChunk(t *testing.T) {
 		}, llm.UsageEvent{InputTokens: 70, OutputTokens: 42}},
 		{"legacy hit field", &usageChunk{PromptTokens: 100, CompletionTokens: 42, PromptCacheHitTokens: 25},
 			llm.UsageEvent{InputTokens: 75, OutputTokens: 42}},
+		{"kimi top-level cached_tokens counts as cache reads (#8075)", &usageChunk{
+			PromptTokens: 100, CompletionTokens: 42, CachedTokens: 30,
+		}, llm.UsageEvent{InputTokens: 70, OutputTokens: 42}},
 		{"floor at zero", &usageChunk{
 			PromptTokens: 10, CompletionTokens: 42,
 			PromptTokensDetails: &usagePromptDetails{CachedTokens: 50},
