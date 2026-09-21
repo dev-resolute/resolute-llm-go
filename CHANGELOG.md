@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.1] - 2026-09-20
+
+### Fixed
+
+- **Gemini 3.7+ flash rejects `thinkingLevel: MINIMAL`.** `gemini-3.7-flash`
+  and `gemini-3.8-flash` return 400 INVALID_ARGUMENT for MINIMAL (verified
+  live; 3.5 and 3.6 still accept it), so every `ThinkingOff` request against
+  them failed outright. The provider now clamps both the disabled level and an
+  explicit `ThinkingMinimal` to LOW for 3.7+ flash and for the
+  `gemini-flash-latest` / `gemini-flash-lite-latest` aliases (which track the
+  newest model). Behaviour for 3.5/3.6 flash, pro and Gemma 4 is unchanged.
+
 ## [0.13.0] - 2026-09-20
 
 > Ports upstream pi 0.84.2–0.86.0 (rediff record:

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"iter"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -100,7 +101,9 @@ const (
 var (
 	reGemini3Pro   = regexp.MustCompile(`gemini-3(?:\.\d+)?-pro`)
 	reGemini3Flash = regexp.MustCompile(`gemini-3(?:\.\d+)?-flash`)
-	reGemma4       = regexp.MustCompile(`gemma-?4`)
+	// reGemini3FlashMinor captures the minor version of a Gemini 3.x flash id.
+	reGemini3FlashMinor = regexp.MustCompile(`gemini-3\.(\d+)-flash`)
+	reGemma4            = regexp.MustCompile(`gemma-?4`)
 )
 
 // classifyGemini maps a model id to its generation, mirroring upstream google.ts's
@@ -146,10 +149,28 @@ func strictToolSamplingSupported(model string) bool {
 	return false
 }
 
-// disabledThinkingLevel is the lowest level used when thinking is "off" for models
-// that cannot fully disable it (Gemini 3): pro clamps to LOW, flash/Gemma to MINIMAL.
-func (c geminiClass) disabledThinkingLevel() genai.ThinkingLevel {
-	if c == class3Pro {
+// flashRejectsMinimal reports whether a Gemini 3 flash model refuses
+// thinkingLevel MINIMAL with 400 INVALID_ARGUMENT. Verified live 2026-09-20:
+// gemini-3.5/3.6-flash accept it, 3.7 and 3.8 reject it. The -latest aliases
+// track the newest flash model, so they are treated as rejecting.
+func flashRejectsMinimal(model string) bool {
+	m := strings.ToLower(model)
+	if m == "gemini-flash-latest" || m == "gemini-flash-lite-latest" {
+		return true
+	}
+	sub := reGemini3FlashMinor.FindStringSubmatch(m)
+	if sub == nil {
+		return false
+	}
+	minor, err := strconv.Atoi(sub[1])
+	return err == nil && minor >= 7
+}
+
+// disabledThinkingLevel is the lowest level used when thinking is "off" for
+// models that cannot fully disable it (Gemini 3): pro and 3.7+ flash clamp to
+// LOW, older flash and Gemma 4 to MINIMAL.
+func disabledThinkingLevel(class geminiClass, model string) genai.ThinkingLevel {
+	if class == class3Pro || (class == class3Flash && flashRejectsMinimal(model)) {
 		return genai.ThinkingLevelLow
 	}
 	return genai.ThinkingLevelMinimal
@@ -157,14 +178,20 @@ func (c geminiClass) disabledThinkingLevel() genai.ThinkingLevel {
 
 // clampThinkingLevel drops levels the model family rejects (upstream #9455):
 // Gemini 3 Pro accepts only LOW and HIGH, so MINIMAL clamps to LOW and MEDIUM
-// to HIGH. Flash and Gemma 4 accept the full enum.
-func clampThinkingLevel(class geminiClass, level genai.ThinkingLevel) genai.ThinkingLevel {
-	if class == class3Pro {
+// to HIGH; Gemini 3.7+ flash rejects MINIMAL, which clamps to LOW. Older flash
+// and Gemma 4 accept the full enum.
+func clampThinkingLevel(class geminiClass, model string, level genai.ThinkingLevel) genai.ThinkingLevel {
+	switch class {
+	case class3Pro:
 		switch level {
 		case genai.ThinkingLevelMinimal:
 			return genai.ThinkingLevelLow
 		case genai.ThinkingLevelMedium:
 			return genai.ThinkingLevelHigh
+		}
+	case class3Flash:
+		if level == genai.ThinkingLevelMinimal && flashRejectsMinimal(model) {
+			return genai.ThinkingLevelLow
 		}
 	}
 	return level
@@ -193,7 +220,7 @@ func thinkingConfigFor(req llm.LLMRequest) *genai.ThinkingConfig {
 	}
 	if class.usesThinkingLevel() {
 		return &genai.ThinkingConfig{
-			ThinkingLevel:   clampThinkingLevel(class, thinkingLevelFor(req.Thinking)),
+			ThinkingLevel:   clampThinkingLevel(class, req.Model, thinkingLevelFor(req.Thinking)),
 			IncludeThoughts: true,
 		}
 	}
@@ -673,7 +700,7 @@ func toGeminiConfig(req llm.LLMRequest, sysInstr *genai.Content) (*genai.Generat
 		config.ThinkingConfig = thinkingConfigFor(req)
 	} else if class := classifyGemini(req.Model); class.usesThinkingLevel() {
 		config.ThinkingConfig = &genai.ThinkingConfig{
-			ThinkingLevel:   class.disabledThinkingLevel(),
+			ThinkingLevel:   disabledThinkingLevel(class, req.Model),
 			IncludeThoughts: false,
 		}
 	}

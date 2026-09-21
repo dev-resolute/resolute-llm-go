@@ -188,3 +188,34 @@ func TestThinkingOffByGeneration(t *testing.T) {
 		}
 	})
 }
+
+// TestFlashMinimalRejectedFrom3_7 pins the live-verified boundary
+// (2026-09-20): gemini-3.5/3.6-flash accept thinkingLevel MINIMAL, 3.7+ and
+// the -latest aliases return 400 INVALID_ARGUMENT, so both the "off" level and
+// an explicit ThinkingMinimal clamp to LOW there.
+func TestFlashMinimalRejectedFrom3_7(t *testing.T) {
+	cases := []struct {
+		model string
+		want  genai.ThinkingLevel
+	}{
+		{"gemini-3.5-flash", genai.ThinkingLevelMinimal},
+		{"gemini-3.6-flash", genai.ThinkingLevelMinimal},
+		{"gemini-3.7-flash", genai.ThinkingLevelLow},
+		{"gemini-3.8-flash", genai.ThinkingLevelLow},
+		{"gemini-3.8-flash-lite", genai.ThinkingLevelLow},
+		{"gemini-flash-latest", genai.ThinkingLevelLow},
+	}
+	for _, c := range cases {
+		off, err := toGeminiConfig(llm.LLMRequest{Model: c.model, Thinking: llm.ThinkingOff}, nil)
+		if err != nil {
+			t.Fatalf("%s: toGeminiConfig: %v", c.model, err)
+		}
+		if off.ThinkingConfig == nil || off.ThinkingConfig.ThinkingLevel != c.want || off.ThinkingConfig.IncludeThoughts {
+			t.Errorf("%s off: ThinkingConfig = %+v, want level %q without thoughts", c.model, off.ThinkingConfig, c.want)
+		}
+		min := thinkingConfigFor(llm.LLMRequest{Model: c.model, Thinking: llm.ThinkingMinimal})
+		if min == nil || min.ThinkingLevel != c.want {
+			t.Errorf("%s minimal: ThinkingConfig = %+v, want level %q", c.model, min, c.want)
+		}
+	}
+}
