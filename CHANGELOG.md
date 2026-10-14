@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Gemini 4 (argon) support.** The generation classifier gains a `class4`
+  for `gemini-4(.x)-*` ids: thinkingLevel enum, validated (strict) tool
+  sampling, signed-replay tool-call IDs, and vision. Argon accepts
+  LOW/MEDIUM/HIGH thinking levels but rejects MINIMAL (verified live), so
+  MINIMAL clamps to LOW and thinking-off floors at LOW — like 3.7+ flash,
+  but MEDIUM passes through unclamped.
+
 ## [0.13.1] - 2026-09-20
 
 ### Fixed

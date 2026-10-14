@@ -96,9 +96,11 @@ const (
 	class3Pro                      // Gemini 3.x pro: thinkingLevel enum
 	class3Flash                    // Gemini 3.x flash + flash-latest aliases: thinkingLevel enum
 	classGemma4                    // Gemma 4: thinkingLevel enum
+	class4                         // Gemini 4.x (argon and later): thinkingLevel enum
 )
 
 var (
+	reGemini4      = regexp.MustCompile(`gemini-4(?:\.\d+)?-`)
 	reGemini3Pro   = regexp.MustCompile(`gemini-3(?:\.\d+)?-pro`)
 	reGemini3Flash = regexp.MustCompile(`gemini-3(?:\.\d+)?-flash`)
 	// reGemini3FlashMinor captures the minor version of a Gemini 3.x flash id.
@@ -113,6 +115,8 @@ func classifyGemini(model string) geminiClass {
 	switch {
 	case reGemma4.MatchString(m):
 		return classGemma4
+	case reGemini4.MatchString(m):
+		return class4
 	case reGemini3Pro.MatchString(m):
 		return class3Pro
 	case reGemini3Flash.MatchString(m) || m == "gemini-flash-latest" || m == "gemini-flash-lite-latest":
@@ -127,11 +131,11 @@ func classifyGemini(model string) geminiClass {
 func (c geminiClass) thinks() bool { return c != classLegacy }
 
 func (c geminiClass) vision() bool {
-	return c == class25 || c == class3Pro || c == class3Flash
+	return c == class25 || c == class3Pro || c == class3Flash || c == class4
 }
 
 func (c geminiClass) usesThinkingLevel() bool {
-	return c == class3Pro || c == class3Flash || c == classGemma4
+	return c == class3Pro || c == class3Flash || c == classGemma4 || c == class4
 }
 
 // strictToolSamplingSupported reports whether the model enforces required
@@ -139,11 +143,10 @@ func (c geminiClass) usesThinkingLevel() bool {
 // google-shared.ts supportsGoogleStrictToolSampling — Gemma is excluded,
 // its ids don't match upstream's ^gemini- gate). Deliberate deviation: our
 // class-derived gate treats gemini-flash-latest and gemini-flash-lite-latest
-// as strict-capable (they resolve to Gemini 3 today); future gemini-4-* will
-// need a classifier update to remain strict-capable.
+// as strict-capable (they resolve to Gemini 3 today).
 func strictToolSamplingSupported(model string) bool {
 	switch classifyGemini(model) {
-	case class3Pro, class3Flash:
+	case class3Pro, class3Flash, class4:
 		return true
 	}
 	return false
@@ -167,10 +170,11 @@ func flashRejectsMinimal(model string) bool {
 }
 
 // disabledThinkingLevel is the lowest level used when thinking is "off" for
-// models that cannot fully disable it (Gemini 3): pro and 3.7+ flash clamp to
-// LOW, older flash and Gemma 4 to MINIMAL.
+// models that cannot fully disable it: pro, Gemini 4 (argon rejects MINIMAL,
+// verified live 2026-10-14), and 3.7+ flash clamp to LOW; older flash and
+// Gemma 4 go to MINIMAL.
 func disabledThinkingLevel(class geminiClass, model string) genai.ThinkingLevel {
-	if class == class3Pro || (class == class3Flash && flashRejectsMinimal(model)) {
+	if class == class3Pro || class == class4 || (class == class3Flash && flashRejectsMinimal(model)) {
 		return genai.ThinkingLevelLow
 	}
 	return genai.ThinkingLevelMinimal
@@ -178,8 +182,10 @@ func disabledThinkingLevel(class geminiClass, model string) genai.ThinkingLevel 
 
 // clampThinkingLevel drops levels the model family rejects (upstream #9455):
 // Gemini 3 Pro accepts only LOW and HIGH, so MINIMAL clamps to LOW and MEDIUM
-// to HIGH; Gemini 3.7+ flash rejects MINIMAL, which clamps to LOW. Older flash
-// and Gemma 4 accept the full enum.
+// clampThinkingLevel drops levels the model family rejects (upstream #9455):
+// Gemini 3 Pro accepts only LOW and HIGH, so MINIMAL clamps to LOW and MEDIUM
+// to HIGH; Gemini 3.7+ flash and Gemini 4 (argon, verified live) reject
+// MINIMAL, which clamps to LOW. Older flash and Gemma 4 accept the full enum.
 func clampThinkingLevel(class geminiClass, model string, level genai.ThinkingLevel) genai.ThinkingLevel {
 	switch class {
 	case class3Pro:
@@ -191,6 +197,10 @@ func clampThinkingLevel(class geminiClass, model string, level genai.ThinkingLev
 		}
 	case class3Flash:
 		if level == genai.ThinkingLevelMinimal && flashRejectsMinimal(model) {
+			return genai.ThinkingLevelLow
+		}
+	case class4:
+		if level == genai.ThinkingLevelMinimal {
 			return genai.ThinkingLevelLow
 		}
 	}
@@ -622,7 +632,7 @@ func toGeminiContents(messages []llm.Message, model string) ([]*genai.Content, *
 // functionCall/functionResponse parts for signed multi-turn replay (Gemini 3+;
 // upstream #7494). Pre-Gemini-3 backends and Gemma reject or ignore them.
 func requiresToolCallID(class geminiClass) bool {
-	return class == class3Pro || class == class3Flash
+	return class == class3Pro || class == class3Flash || class == class4
 }
 
 // supportsMultimodalFunctionResponse reports whether the model accepts images

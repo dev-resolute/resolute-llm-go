@@ -33,6 +33,7 @@ func TestStrictToolSamplingSupported(t *testing.T) {
 	}{
 		{name: "3 pro preview", model: "gemini-3.1-pro-preview", want: true},
 		{name: "3 flash", model: "gemini-3.5-flash", want: true},
+		{name: "4 argon", model: "gemini-4-argon", want: true},
 		{name: "2.5 flash unsupported", model: "gemini-2.5-flash", want: false},
 		{name: "legacy unsupported", model: "gemini-1.5-pro", want: false},
 		{name: "gemma 4 excluded", model: "gemma-4", want: false},

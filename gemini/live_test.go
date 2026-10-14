@@ -230,3 +230,22 @@ func TestLiveGeminiThinkingSurfaces_3_Flash(t *testing.T) {
 		t.Errorf("answer missing the correct product 391; got %q", answer)
 	}
 }
+
+func TestLiveGeminiThinkingSurfaces_4_Argon(t *testing.T) {
+	// given a live Gemini 4 model (skips when the key has no access to it)
+	p := liveProvider(t)
+
+	// when the provider streams a reasoning prompt
+	thinking, answer, err := streamThinking(t, p, "gemini-4-argon")
+	if err != nil {
+		t.Skipf("gemini-4-argon not available to this key: %v", err)
+	}
+
+	// then thinking surfaces via the thinkingLevel mechanism (class4, full enum)
+	if thinking == "" {
+		t.Error("expected thinking content for gemini-4 (thinkingLevel mechanism), got none")
+	}
+	if !strings.Contains(answer, "391") {
+		t.Errorf("answer missing the correct product 391; got %q", answer)
+	}
+}
