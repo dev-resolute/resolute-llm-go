@@ -23,6 +23,8 @@ func TestClassifyGemini(t *testing.T) {
 		{name: "flash-lite-latest alias", model: "gemini-flash-lite-latest", want: class3Flash},
 		{name: "gemma 4 dashed", model: "gemma-4", want: classGemma4},
 		{name: "gemma 4 joined", model: "gemma4", want: classGemma4},
+		{name: "4 argon", model: "gemini-4-argon", want: class4},
+		{name: "4.1 argon", model: "gemini-4.1-argon", want: class4},
 		{name: "legacy 1.5", model: "gemini-1.5-pro", want: classLegacy},
 		{name: "unknown", model: "some-other-model", want: classLegacy},
 	}
@@ -53,6 +55,7 @@ func TestCapabilitiesByGeneration(t *testing.T) {
 		{name: "3.1 pro", model: "gemini-3.1-pro", wantThinking: true, wantVision: true},
 		{name: "3.5 flash", model: "gemini-3.5-flash", wantThinking: true, wantVision: true},
 		{name: "flash-latest", model: "gemini-flash-latest", wantThinking: true, wantVision: true},
+		{name: "4 argon", model: "gemini-4-argon", wantThinking: true, wantVision: true},
 		{name: "legacy 1.5", model: "gemini-1.5-pro", wantThinking: false, wantVision: false},
 	}
 	for _, tt := range tests {
@@ -140,6 +143,29 @@ func TestThinkingConfigMechanismByGeneration(t *testing.T) {
 			}
 		}
 	})
+	t.Run("gemini 4 argon clamps MINIMAL to LOW, passes the rest", func(t *testing.T) {
+		// Gemini 4 (argon) accepts LOW/MEDIUM/HIGH but rejects MINIMAL
+		// (verified live): MINIMAL clamps to LOW, MEDIUM passes through.
+		levels := map[llm.ThinkingLevel]genai.ThinkingLevel{
+			llm.ThinkingMinimal: genai.ThinkingLevelLow,
+			llm.ThinkingLow:     genai.ThinkingLevelLow,
+			llm.ThinkingMedium:  genai.ThinkingLevelMedium,
+			llm.ThinkingHigh:    genai.ThinkingLevelHigh,
+		}
+		for portable, want := range levels {
+			cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-4-argon", Thinking: portable}, nil)
+			if err != nil {
+				t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+			}
+			tc := cfg.ThinkingConfig
+			if tc == nil || tc.ThinkingLevel != want {
+				t.Errorf("portable %v → ThinkingLevel %v, want %v", portable, tc.ThinkingLevel, want)
+			}
+			if tc.ThinkingBudget != nil {
+				t.Errorf("ThinkingBudget = %v, want nil for Gemini 4", *tc.ThinkingBudget)
+			}
+		}
+	})
 }
 
 func TestThinkingOffByGeneration(t *testing.T) {
@@ -182,6 +208,23 @@ func TestThinkingOffByGeneration(t *testing.T) {
 		}
 		if tc.ThinkingLevel != genai.ThinkingLevelMinimal {
 			t.Errorf("ThinkingLevel = %q, want MINIMAL for Gemini 3 flash off", tc.ThinkingLevel)
+		}
+		if tc.IncludeThoughts {
+			t.Error("IncludeThoughts = true, want false when off")
+		}
+	})
+
+	t.Run("gemini 4 argon off clamps to low level without thoughts", func(t *testing.T) {
+		cfg, err := toGeminiConfig(llm.LLMRequest{Model: "gemini-4-argon", Thinking: llm.ThinkingOff}, nil)
+		if err != nil {
+			t.Fatalf("toGeminiConfig: unexpected error: %v", err)
+		}
+		tc := cfg.ThinkingConfig
+		if tc == nil {
+			t.Fatal("ThinkingConfig is nil, want disabled-level config for Gemini 4")
+		}
+		if tc.ThinkingLevel != genai.ThinkingLevelLow {
+			t.Errorf("ThinkingLevel = %q, want LOW for Gemini 4 off (argon rejects MINIMAL)", tc.ThinkingLevel)
 		}
 		if tc.IncludeThoughts {
 			t.Error("IncludeThoughts = true, want false when off")
